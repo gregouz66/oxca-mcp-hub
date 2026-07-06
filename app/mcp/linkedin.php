@@ -50,7 +50,10 @@ function linkedin_oauth_url(array $settings, string $state): string
 {
     $scopes = 'openid profile email w_member_social';
     if (!empty($settings['org_mode'])) {
-        $scopes .= ' r_organization_social w_organization_social';
+        // rw_organization_admin est requis pour les statistiques de reporting
+        // et le nombre d'abonnés (Community Management API) ; r/w_organization_social
+        // ne suffit pas pour ces endpoints.
+        $scopes .= ' r_organization_social w_organization_social rw_organization_admin';
     }
     return 'https://www.linkedin.com/oauth/v2/authorization?' . http_build_query([
         'response_type' => 'code',
@@ -234,10 +237,14 @@ function li_tool_create_post(array $settings, array $args): array
 
     $linkUrl = trim((string) ($args['link_url'] ?? ''));
     if ($linkUrl !== '') {
-        $article = ['source' => $linkUrl];
-        if (!empty($args['link_title'])) {
-            $article['title'] = (string) $args['link_title'];
+        // L'API Posts exige un titre non vide pour un article : à défaut de
+        // link_title, on retombe sur le nom d'hôte du lien (LinkedIn ne fait
+        // aucun scraping pour le déduire).
+        $title = trim((string) ($args['link_title'] ?? ''));
+        if ($title === '') {
+            $title = parse_url($linkUrl, PHP_URL_HOST) ?: $linkUrl;
         }
+        $article = ['source' => $linkUrl, 'title' => mb_str_limit($title, 400)];
         if (!empty($args['link_description'])) {
             $article['description'] = (string) $args['link_description'];
         }
@@ -384,10 +391,12 @@ function li_tool_org_follower_count(array $settings): array
     li_require_connection($settings);
     $orgUrn = li_require_org($settings);
 
-    [$status, , $data] = li_http(
+    // Endpoint versionné (/rest) + enum majuscule COMPANY_FOLLOWED_BY_MEMBER :
+    // l'ancien /v2/networkSizes et l'enum CamelCase sont retirés (426).
+    [$status, , $data] = li_rest(
+        $settings,
         'GET',
-        'https://api.linkedin.com/v2/networkSizes/' . rawurlencode($orgUrn) . '?edgeType=CompanyFollowedByMember',
-        ['Authorization: Bearer ' . $settings['access_token']]
+        '/rest/networkSizes/' . rawurlencode($orgUrn) . '?edgeType=COMPANY_FOLLOWED_BY_MEMBER'
     );
     if ($status !== 200) {
         throw li_api_error('Nombre d\'abonnés indisponible', $status, $data);

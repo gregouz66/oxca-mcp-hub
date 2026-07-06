@@ -14,14 +14,14 @@ if (current_user()) {
 $error = null;
 $step  = isset($_SESSION['pending_login']) ? 'code' : 'email';
 
-// Lien magique reçu par email.
-if (isset($_GET['lt']) && is_string($_GET['lt'])) {
-    $error = login_verify_link($_GET['lt']);
-    if ($error === null) {
-        flash('ok', 'Vous êtes connecté.');
-        redirect('/dashboard.php');
-    }
-    $step = 'email';
+// Lien magique reçu par email : on ne connecte JAMAIS sur un simple GET (sinon
+// un lien magique de l'attaquant, cliqué par une victime déconnectée, la
+// connecterait dans le compte de l'attaquant — login CSRF). On affiche une
+// page de confirmation dont le POST est protégé par un jeton CSRF de session.
+$linkToken = null;
+if (isset($_GET['lt']) && is_string($_GET['lt']) && preg_match('/^[0-9a-f]{16}\.[0-9a-f]{48}$/', $_GET['lt'])) {
+    $linkToken = $_GET['lt'];
+    $step = 'confirm';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -38,6 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect('/dashboard.php');
         }
         $step = isset($_SESSION['pending_login']) ? 'code' : 'email';
+    } elseif ($action === 'confirm_link') {
+        $error = login_verify_link((string) ($_POST['lt'] ?? ''));
+        if ($error === null) {
+            flash('ok', 'Vous êtes connecté.');
+            redirect('/dashboard.php');
+        }
+        $step = 'email';
     } elseif ($action === 'restart') {
         unset($_SESSION['pending_login']);
         $step = 'email';
@@ -53,7 +60,14 @@ if ($error !== null) {
     echo '<div class="flash flash-error" role="alert">' . ui_icon('alert') . '<span>' . e($error) . '</span></div>';
 }
 
-if ($step === 'email') {
+if ($step === 'confirm') {
+    echo '<header class="card-head"><h2>Confirmer la connexion</h2>'
+        . '<p class="muted">Cliquez pour vous connecter à ' . e(APP_NAME) . ' depuis ce navigateur.</p></header>';
+    echo '<form method="post">' . csrf_field()
+        . '<input type="hidden" name="action" value="confirm_link">'
+        . '<input type="hidden" name="lt" value="' . e($linkToken) . '">'
+        . '<button type="submit" class="btn btn-primary btn-block" autofocus>Me connecter</button></form>';
+} elseif ($step === 'email') {
     echo '<header class="card-head"><h2>Connexion</h2>'
         . '<p class="muted">Pas de mot de passe : recevez un code par email.</p></header>';
     echo '<form method="post">' . csrf_field()

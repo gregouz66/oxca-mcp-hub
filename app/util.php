@@ -60,6 +60,24 @@ function normalize_email(string $email): string
     return strtolower(trim($email));
 }
 
+/**
+ * Tronque une chaîne à $max caractères. Utilise mbstring si disponible,
+ * sinon retombe sur substr — mbstring est absent de nombreux mutualisés.
+ */
+function mb_str_limit(string $s, int $max): string
+{
+    if (function_exists('mb_substr')) {
+        return mb_substr($s, 0, $max, 'UTF-8');
+    }
+    // Découpe sûre en UTF-8 sans mbstring (évite de couper un caractère multioctet).
+    if (strlen($s) <= $max) {
+        return $s;
+    }
+    $cut = substr($s, 0, $max);
+    // Retire un éventuel caractère multioctet tronqué en fin de chaîne.
+    return preg_replace('/[\x80-\xBF]+$|[\xC0-\xFF]$/', '', $cut) ?? $cut;
+}
+
 /* ------------------------------------------------------------------ CSRF */
 
 function csrf_token(): string

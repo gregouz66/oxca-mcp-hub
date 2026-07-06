@@ -67,7 +67,7 @@ function login_request(string $email): ?string
             client_ip(),
         ]
     );
-    $_SESSION['pending_login'] = ['id' => (int) db()->lastInsertId(), 'email' => $email];
+    $tokenId = (int) db()->lastInsertId();
 
     $link = base_url('/login.php?lt=' . $selector . '.' . $validator);
     $html = mail_template('Votre code de connexion', '
@@ -82,8 +82,12 @@ function login_request(string $email): ?string
         . 'Ce code expire dans ' . LOGIN_TTL_MINUTES . " minutes et ne peut servir qu'une fois.";
 
     if (!send_mail($email, 'Votre code de connexion — ' . APP_NAME, $html, $text)) {
+        // L'envoi a échoué : on ne marque PAS la demande comme en attente, pour
+        // ne pas afficher « Code envoyé à … » alors que rien n'est parti.
+        q('DELETE FROM login_tokens WHERE id = ?', [$tokenId]);
         return "L'email n'a pas pu être envoyé. Vérifiez la configuration email (voir README).";
     }
+    $_SESSION['pending_login'] = ['id' => $tokenId, 'email' => $email];
     return null;
 }
 

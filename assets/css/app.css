@@ -210,7 +210,8 @@ svg { flex: none; vertical-align: middle; }
 
 /* ------------------------------------------------------------ Formulaires */
 .field { margin-bottom: 18px; }
-.field > label {
+.field > label,
+.field > .field-label {
   display: block; font-size: 13px; font-weight: 550;
   color: var(--text); margin-bottom: 7px;
 }
@@ -246,6 +247,10 @@ svg { flex: none; vertical-align: middle; }
 .check-box svg { width: 13px; height: 13px; color: #fff; opacity: 0; transform: scale(.5); transition: all .2s var(--ease); }
 .check input:checked + .check-box { background: var(--accent); border-color: var(--accent); }
 .check input:checked + .check-box svg { opacity: 1; transform: scale(1); }
+.check input:focus-visible + .check-box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 22%, transparent);
+}
 
 .copy-row { display: flex; gap: 8px; }
 .copy-row .input { flex: 1; min-width: 0; }

@@ -34,7 +34,8 @@ define('DB_PASS', '');
 // Transport d'envoi des codes de connexion :
 //   'mail' — fonction mail() de PHP (fonctionne sur la plupart des mutualisés)
 //   'smtp' — serveur SMTP (renseignez les constantes SMTP_* ci-dessous)
-//   'log'  — n'envoie rien, écrit les emails dans storage/mail.log (dev/test)
+//   'log'  — DÉV UNIQUEMENT : n'envoie rien, écrit les emails (codes et liens)
+//            dans storage/mail-<empreinte>.log. Ne pas utiliser en production.
 define('MAIL_DRIVER', 'mail');
 
 define('MAIL_FROM', 'no-reply@example.com');

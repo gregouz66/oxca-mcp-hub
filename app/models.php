@@ -142,9 +142,19 @@ function config_update_settings(array $config, array $patch): void
             $settings[$key] = encrypt_value((string) $settings[$key]);
         }
     }
+    // JSON_INVALID_UTF8_SUBSTITUTE : un octet invalide dans une saisie ne doit
+    // jamais faire retourner false à json_encode (ce qui écraserait la colonne,
+    // tokens chiffrés compris). On vérifie tout de même le résultat.
+    $json = json_encode(
+        $settings,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+    );
+    if ($json === false) {
+        throw new RuntimeException('Échec de l\'encodage des réglages : ' . json_last_error_msg());
+    }
     q(
         'UPDATE mcp_configs SET settings = ?, updated_at = ? WHERE id = ?',
-        [json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), now(), $config['id']]
+        [$json, now(), $config['id']]
     );
 }
 

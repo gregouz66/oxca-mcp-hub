@@ -74,8 +74,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allOk && !$installed) {
 }
 
 /* ---------------------------------------------------------------- Rendu */
+
+// Une fois installé, ne rien divulguer de l'environnement (version PHP, nom de
+// base, erreurs de connexion) : page minimale rappelant de supprimer le fichier.
+if ($installed) {
+    ui_top('Installation');
+    ui_page_header('Installation terminée', 'Application déjà installée.');
+    ui_card_open('Tout est prêt', '', 1);
+    echo '<p class="muted" style="margin-bottom:16px">Par sécurité, supprimez maintenant <code>install.php</code> de votre hébergement.</p>'
+        . '<a class="btn btn-primary" href="' . e(base_url('/login.php')) . '">Se connecter</a>';
+    ui_card_close();
+    ui_bottom();
+    exit;
+}
+
 ui_top('Installation');
-ui_page_header('Installation', $installed ? 'Application déjà installée.' : '2/2 — Vérification de l\'environnement.');
+ui_page_header('Installation', '2/2 — Vérification de l\'environnement.');
 
 ui_card_open('Environnement', '', 1);
 echo '<div class="rows">';
@@ -87,18 +101,22 @@ foreach ($checks as [$label, $ok]) {
 echo '</div>';
 ui_card_close();
 
-if ($installed) {
-    ui_card_open('Tout est prêt', '', 2);
-    echo '<p class="muted" style="margin-bottom:16px">Par sécurité, supprimez maintenant <code>install.php</code> de votre hébergement.</p>'
-        . '<a class="btn btn-primary" href="' . e(base_url('/login.php')) . '">Se connecter</a>';
+// Aide : si l'APP_KEY est absente/invalide, on en propose une, prête à coller.
+$appKeyOk = strlen((string) APP_KEY) === 64 && ctype_xdigit((string) APP_KEY);
+if (!$appKeyOk) {
+    ui_card_open('Générer votre APP_KEY', 'Collez cette clé dans la constante APP_KEY de config.php, puis rechargez.', 2);
+    ui_copy_row('APP_KEY', bin2hex(random_bytes(32)),
+        'Clé de chiffrement à ne plus modifier ensuite : les données chiffrées deviendraient illisibles.');
     ui_card_close();
-} elseif ($allOk) {
-    ui_card_open('Créer les tables', 'Importe schema.sql dans la base ' . DB_NAME . '.', 2);
+}
+
+if ($allOk) {
+    ui_card_open('Créer les tables', 'Importe schema.sql dans la base ' . DB_NAME . '.', 3);
     echo '<form method="post">' . csrf_field()
         . '<button type="submit" class="btn btn-primary">Installer</button></form>';
     ui_card_close();
 } else {
-    ui_card_open('Corrigez les points ci-dessus', '', 2);
+    ui_card_open('Corrigez les points ci-dessus', '', 3);
     echo '<p class="muted">Modifiez config.php (ou contactez votre hébergeur pour les extensions) puis rechargez cette page.</p>';
     ui_card_close();
 }

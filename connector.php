@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'save':
             $name = trim((string) ($_POST['name'] ?? ''));
             if ($name !== '' && $name !== $config['name']) {
-                config_rename($config, mb_substr($name, 0, 120));
+                config_rename($config, mb_str_limit($name, 120));
             }
             $patch = [
                 'client_id' => trim((string) ($_POST['client_id'] ?? '')),
@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         case 'share':
             $err = share_add($config, (string) ($_POST['email'] ?? ''));
-            flash($err === null ? 'ok' : 'error', $err ?? 'Connecteur partagé : la personne a reçu un email avec sa propre URL d\'accès.');
+            flash($err === null ? 'ok' : 'error', $err ?? 'Connecteur partagé : la personne le retrouvera dans son espace après connexion, avec sa propre URL d\'accès. Une notification lui a été envoyée par email.');
             redirect($back);
 
         case 'unshare':
@@ -188,15 +188,21 @@ if ($isOwner) {
 }
 
 /* ---- 3. Endpoint MCP + instructions Claude --------------------------- */
-ui_card_open('Utiliser avec Claude', 'Votre URL personnelle : elle vaut authentification, ne la publiez pas.', 3);
-ui_copy_row('URL de l\'endpoint MCP', $endpoint,
-    $isOwner ? '' : 'Cette URL vous est propre : le propriétaire peut la révoquer sans affecter les autres.');
-ui_code_block('Claude Code — une seule commande', 'claude mcp add --transport http ' . $slug . ' "' . $endpoint . '"');
+$mcpBase = base_url('/mcp.php');
+$token   = grant_token($grant);
+ui_card_open('Utiliser avec Claude', 'Votre token vaut authentification : ne le publiez pas.', 3);
+ui_copy_row('Token d\'accès', $token,
+    'Transmis via l\'en-tête Authorization ci-dessous — il n\'apparaît ainsi pas dans les journaux du serveur.'
+    . ($isOwner ? '' : ' Ce token vous est propre : le propriétaire peut le révoquer sans affecter les autres.'));
+ui_code_block('Claude Code — une seule commande', 'claude mcp add --transport http ' . $slug . ' ' . $mcpBase . ' --header "Authorization: Bearer ' . $token . '"');
 ui_code_block('Ou dans un fichier .mcp.json (à la racine du projet)', json_encode(
-    ['mcpServers' => [$slug => ['type' => 'http', 'url' => $endpoint]]],
+    ['mcpServers' => [$slug => ['type' => 'http', 'url' => $mcpBase, 'headers' => ['Authorization' => 'Bearer ' . $token]]]],
     JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
 ));
-echo '<p class="hint">Sur claude.ai (abonnements payants) : Paramètres → Connecteurs → « Ajouter un connecteur personnalisé » → collez l\'URL ci-dessus.</p>';
+echo '<details class="disclosure"><summary>Client sans en-têtes personnalisés (claude.ai, etc.)</summary>';
+ui_copy_row('URL avec token intégré', $endpoint,
+    'Pratique quand le client n\'accepte qu\'une URL (claude.ai → Paramètres → Connecteurs → « Ajouter un connecteur personnalisé »). À éviter si possible : le token figure alors dans les journaux d\'accès du serveur.');
+echo '</details>';
 
 echo '<div style="margin-top:16px">';
 ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'regenerate'],
@@ -227,7 +233,7 @@ if ($isOwner) {
     echo '<form method="post" class="copy-row" style="margin-top:' . ($shares !== [] ? '16px' : '0') . '">' . csrf_field()
         . '<input type="hidden" name="id" value="' . (int) $config['id'] . '">'
         . '<input type="hidden" name="action" value="share">'
-        . '<input class="input" type="email" name="email" placeholder="email@exemple.com" required>'
+        . '<input class="input" type="email" name="email" placeholder="email@exemple.com" aria-label="Adresse email de la personne avec qui partager" required>'
         . '<button type="submit" class="btn btn-primary">' . ui_icon('share') . 'Partager</button></form>';
     ui_card_close();
 

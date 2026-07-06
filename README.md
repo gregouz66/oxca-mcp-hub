@@ -72,7 +72,9 @@ Aucune dépendance externe : déposez les fichiers, c'est tout.
    php -r "echo bin2hex(random_bytes(32));"   # génère une APP_KEY
    ```
 
-   > Pas de terminal ? Ouvrez `/install.php` : une clé est générée pour vous.
+   > Pas de terminal ? Laissez `APP_KEY` vide pour l'instant : à l'étape
+   > suivante, `/install.php` détecte l'absence de clé et en génère une,
+   > prête à coller dans `config.php`.
 
 4. **Ouvrez `https://votre-site/install.php`** : l'installateur vérifie
    l'environnement puis crée les tables en un clic. Supprimez ensuite
@@ -89,7 +91,7 @@ Le transport se choisit dans `config.php` via `MAIL_DRIVER` :
 |---|---|
 | `mail` | Fonction `mail()` de PHP — fonctionne telle quelle chez la plupart des hébergeurs mutualisés (OVH, o2switch, Ionos…). |
 | `smtp` | Client SMTP intégré (STARTTLS, SSL, AUTH LOGIN). Renseignez `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE`. Recommandé si les emails `mail()` arrivent en spam. |
-| `log` | N'envoie rien : les emails (et donc les codes de connexion) sont écrits dans `storage/mail.log`. Pratique en développement. |
+| `log` | **Développement uniquement.** N'envoie rien : les emails (codes et liens magiques) sont écrits en clair dans `storage/mail-<empreinte>.log` (nom dérivé d'`APP_KEY`, protégé par `.htaccess`). Ne l'utilisez jamais en production : quiconque lit ce fichier peut se connecter. |
 
 Utilisez une adresse `MAIL_FROM` du même domaine que votre site pour une
 meilleure délivrabilité (SPF/DKIM configurés chez l'hébergeur).
@@ -124,6 +126,11 @@ l'administrateur de l'instance en déclare une pour tout le monde via
   engagement, abonnés) : activez le « mode organisation » du connecteur.
   Nécessite le produit **Community Management API** — gratuit, mais soumis à
   une demande d'accès auprès de LinkedIn depuis l'onglet Products de votre app.
+  Une fois le produit accordé, **reconnectez LinkedIn** : le connecteur demande
+  alors les autorisations `r_organization_social`, `w_organization_social` et
+  `rw_organization_admin` (cette dernière étant requise par LinkedIn pour les
+  statistiques de reporting et le nombre d'abonnés). Vous devez être
+  **administrateur** de la page concernée.
 - ❌ LinkedIn n'expose **pas d'API de statistiques pour les posts d'un profil
   personnel** (quelle que soit l'app, gratuite ou non) — c'est une limite de
   LinkedIn, pas de ce projet.
@@ -133,10 +140,12 @@ l'administrateur de l'instance en déclare une pour tout le monde via
 ## Brancher Claude Code
 
 Sur la page du connecteur, section **Utiliser avec Claude**, copiez la
-commande affichée :
+commande affichée. Le token est transmis dans un en-tête `Authorization`, il
+n'apparaît donc pas dans les journaux d'accès du serveur :
 
 ```bash
-claude mcp add --transport http linkedin "https://votre-site/mcp.php?t=oxm_…"
+claude mcp add --transport http linkedin https://votre-site/mcp.php \
+  --header "Authorization: Bearer oxm_…"
 ```
 
 Ou de façon déclarative dans le `.mcp.json` d'un projet :
@@ -144,7 +153,11 @@ Ou de façon déclarative dans le `.mcp.json` d'un projet :
 ```json
 {
   "mcpServers": {
-    "linkedin": { "type": "http", "url": "https://votre-site/mcp.php?t=oxm_…" }
+    "linkedin": {
+      "type": "http",
+      "url": "https://votre-site/mcp.php",
+      "headers": { "Authorization": "Bearer oxm_…" }
+    }
   }
 }
 ```
@@ -152,10 +165,13 @@ Ou de façon déclarative dans le `.mcp.json` d'un projet :
 Puis, dans Claude Code : *« Publie sur LinkedIn un post qui annonce … »*
 
 Sur **claude.ai** (abonnements payants) : Paramètres → Connecteurs →
-**Ajouter un connecteur personnalisé** → collez la même URL.
+**Ajouter un connecteur personnalisé**. Ce type de client n'accepte qu'une
+URL : dépliez « Client sans en-têtes personnalisés » sur la page du connecteur
+et collez l'URL avec token intégré (`…/mcp.php?t=oxm_…`).
 
-> L'URL contient votre token personnel : elle **vaut authentification**.
-> Ne la publiez pas ; régénérez-la en un clic en cas de doute.
+> Le token **vaut authentification**. Ne le publiez pas ; régénérez-le en un
+> clic en cas de doute. Préférez la forme en-tête `Authorization` à l'URL avec
+> token, qui peut être journalisée par le serveur ou les intermédiaires.
 
 L'endpoint accepte aussi le token en `Authorization: Bearer oxm_…` ou en
 suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.

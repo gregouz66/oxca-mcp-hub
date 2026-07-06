@@ -28,7 +28,10 @@ function send_mail(string $to, string $subject, string $html, string $text): boo
         if (!is_dir($dir)) {
             @mkdir($dir, 0775, true);
         }
-        return (bool) file_put_contents($dir . '/mail.log', $line, FILE_APPEND | LOCK_EX);
+        // Le driver 'log' est réservé au développement ; il consigne codes et
+        // liens magiques en clair. Nom de fichier non devinable (dérivé
+        // d'APP_KEY) en défense en profondeur si .htaccess n'est pas honoré.
+        return (bool) file_put_contents($dir . '/' . mail_log_name(), $line, FILE_APPEND | LOCK_EX);
     }
 
     $boundary = 'b' . random_hex(16);
@@ -133,6 +136,12 @@ function smtp_send(string $to, string $subject, array $headers, string $body): b
         @fclose($fp);
         return false;
     }
+}
+
+/** Nom du fichier de journal du driver 'log', dérivé d'APP_KEY (dev uniquement). */
+function mail_log_name(): string
+{
+    return 'mail-' . substr(hash('sha256', 'maillog|' . APP_KEY), 0, 16) . '.log';
 }
 
 /** Gabarit HTML minimaliste commun à tous les emails de l'application. */

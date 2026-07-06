@@ -22,7 +22,8 @@ function ui_top(string $title, ?array $user = null, bool $wide = false): void
         . '<nav class="nav-actions">';
     if ($user) {
         echo '<span class="nav-user" title="' . e($user['email']) . '">' . e($user['email']) . '</span>'
-            . '<a class="btn btn-ghost btn-sm" href="' . e(base_url('/logout.php')) . '">Déconnexion</a>';
+            . '<form method="post" action="' . e(base_url('/logout.php')) . '" class="inline-form">' . csrf_field()
+            . '<button type="submit" class="btn btn-ghost btn-sm">Déconnexion</button></form>';
     } else {
         echo '<a class="btn btn-primary btn-sm" href="' . e(base_url('/login.php')) . '">Se connecter</a>';
     }
@@ -120,9 +121,10 @@ function ui_checkbox(string $name, string $label, bool $checked, string $hint = 
 /** Valeur en lecture seule avec bouton « copier ». */
 function ui_copy_row(string $label, string $value, string $hint = ''): void
 {
-    echo '<div class="field"><label>' . e($label) . '</label>'
-        . '<div class="copy-row"><input class="input" type="text" readonly value="' . e($value) . '" onclick="this.select()">'
-        . '<button type="button" class="btn btn-ghost btn-icon" data-copy="' . e($value) . '" aria-label="Copier">' . ui_icon('copy') . '</button></div>'
+    $id = 'c-' . substr(md5($label . $value), 0, 8);
+    echo '<div class="field"><label for="' . $id . '">' . e($label) . '</label>'
+        . '<div class="copy-row"><input id="' . $id . '" class="input" type="text" readonly value="' . e($value) . '" onclick="this.select()">'
+        . '<button type="button" class="btn btn-ghost btn-icon" data-copy="' . e($value) . '" aria-label="Copier ' . e($label) . '">' . ui_icon('copy') . '</button></div>'
         . ($hint !== '' ? '<p class="hint">' . $hint . '</p>' : '')
         . '</div>';
 }
@@ -130,9 +132,11 @@ function ui_copy_row(string $label, string $value, string $hint = ''): void
 /** Bloc de code copiable (instructions CLI, JSON…). */
 function ui_code_block(string $label, string $code): void
 {
-    echo '<div class="field"><label>' . e($label) . '</label>'
+    // Le <pre> n'est pas un contrôle de formulaire : on utilise un intitulé de
+    // section (span) plutôt qu'un <label> qui ne pointerait sur rien.
+    echo '<div class="field"><span class="field-label">' . e($label) . '</span>'
         . '<div class="code-block"><pre>' . e($code) . '</pre>'
-        . '<button type="button" class="btn btn-icon code-copy" data-copy="' . e($code) . '" aria-label="Copier">' . ui_icon('copy') . '</button>'
+        . '<button type="button" class="btn btn-icon code-copy" data-copy="' . e($code) . '" aria-label="Copier ' . e($label) . '">' . ui_icon('copy') . '</button>'
         . '</div></div>';
 }
 
