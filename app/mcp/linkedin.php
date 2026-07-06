@@ -135,15 +135,16 @@ function linkedin_tools(array $settings): array
     $tools = [
         [
             'name'        => 'linkedin_create_post',
-            'description' => 'Publie un post sur le profil LinkedIn connecté. Peut inclure un lien (article) avec titre et description. Retourne l\'URN et l\'URL publique du post.',
+            'description' => 'Publie un post LinkedIn. Par défaut au nom du profil connecté ; avec author=organization, au nom de la page entreprise configurée (mode organisation requis). Peut inclure un lien (article) avec titre et description. Retourne l\'URN et l\'URL publique du post.',
             'inputSchema' => [
                 'type'       => 'object',
                 'properties' => [
                     'text' => ['type' => 'string', 'description' => 'Texte du post (max ~3000 caractères).'],
+                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite le mode organisation activé et une reconnexion LinkedIn avec le scope w_organization_social).'],
                     'link_url' => ['type' => 'string', 'description' => 'URL à partager (facultatif).'],
                     'link_title' => ['type' => 'string', 'description' => 'Titre affiché pour le lien (facultatif).'],
                     'link_description' => ['type' => 'string', 'description' => 'Description affichée pour le lien (facultatif).'],
-                    'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC).'],
+                    'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC ; ignoré pour une page, toujours publique).'],
                     'disable_reshare' => ['type' => 'boolean', 'description' => 'Interdire le repartage (défaut : false).'],
                 ],
                 'required' => ['text'],
@@ -246,8 +247,20 @@ function li_tool_create_post(array $settings, array $args): array
     $visibility = in_array($args['visibility'] ?? '', ['PUBLIC', 'CONNECTIONS'], true)
         ? $args['visibility'] : 'PUBLIC';
 
+    // Auteur du post : le membre connecté (défaut) ou la page organisation.
+    $asOrg  = ($args['author'] ?? 'member') === 'organization';
+    $author = $settings['member_urn'];
+    if ($asOrg) {
+        $author = li_require_org($settings);
+        $granted = (string) ($settings['granted_scopes'] ?? '');
+        if ($granted !== '' && !str_contains($granted, 'w_organization_social')) {
+            throw new McpToolError('Le token LinkedIn actuel n\'a pas le scope w_organization_social : le propriétaire doit cliquer « Reconnecter » sur la page du connecteur (mode organisation activé) pour accorder les autorisations de page. Le produit « Community Management API » doit être actif sur l\'app LinkedIn.');
+        }
+        $visibility = 'PUBLIC'; // un post de page est toujours public
+    }
+
     $payload = [
-        'author'       => $settings['member_urn'],
+        'author'       => $author,
         'commentary'   => linkedin_escape_text($text),
         'visibility'   => $visibility,
         'distribution' => [
@@ -284,8 +297,9 @@ function li_tool_create_post(array $settings, array $args): array
     $url = $urn !== '' ? 'https://www.linkedin.com/feed/update/' . rawurlencode($urn) . '/' : '';
 
     return mcp_tool_result(
-        "Post publié avec succès.\nURN : $urn" . ($url !== '' ? "\nURL : $url" : ''),
-        ['post_urn' => $urn, 'post_url' => $url, 'visibility' => $visibility]
+        'Post publié avec succès au nom de ' . ($asOrg ? "la page $author" : 'votre profil')
+            . ".\nURN : $urn" . ($url !== '' ? "\nURL : $url" : ''),
+        ['post_urn' => $urn, 'post_url' => $url, 'author' => $author, 'visibility' => $visibility]
     );
 }
 
@@ -447,7 +461,7 @@ function li_require_org(array $settings): string
 {
     $orgUrn = trim((string) ($settings['org_urn'] ?? ''));
     if (empty($settings['org_mode']) || $orgUrn === '') {
-        throw new McpToolError('Les statistiques nécessitent le mode organisation : activez-le sur la page du connecteur et renseignez l\'URN de votre page (urn:li:organization:…).');
+        throw new McpToolError('Cette action au nom d\'une page nécessite le mode organisation : sur la page du connecteur, activez « mode organisation », renseignez l\'identifiant de votre page (urn:li:organization:…), enregistrez puis cliquez « Reconnecter » pour accorder les autorisations de page.');
     }
     return $orgUrn;
 }

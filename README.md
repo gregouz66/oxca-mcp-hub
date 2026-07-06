@@ -121,7 +121,14 @@ l'administrateur de l'instance en déclare une pour tout le monde via
 ### Ce que LinkedIn autorise gratuitement (et ce qu'il ne permet pas)
 
 - ✅ Publier, commenter, réagir, supprimer **au nom du profil connecté**
-  (produit *Share on LinkedIn*, scope `w_member_social`).
+  (produit *Share on LinkedIn*, scope `w_member_social`). C'est le
+  comportement par défaut : sans mode organisation, les posts partent
+  toujours au nom du **profil**, jamais d'une page.
+- ✅ **Publier au nom d'une page entreprise** dont vous êtes admin :
+  activez le mode organisation du connecteur, reconnectez LinkedIn, puis
+  demandez à Claude de publier « en tant que page » (argument
+  `author: organization`). Nécessite la *Community Management API*
+  (gratuite, sur demande).
 - ✅ **Statistiques d'une page organisation** (impressions, clics, réactions,
   engagement, abonnés) : activez le « mode organisation » du connecteur.
   Nécessite le produit **Community Management API** — gratuit, mais soumis à
@@ -194,7 +201,7 @@ suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.
 
 | Outil MCP | Description | Prérequis |
 |---|---|---|
-| `linkedin_create_post` | Publie un post (texte, lien avec titre/description, visibilité publique ou connexions, blocage du repartage) | Share on LinkedIn |
+| `linkedin_create_post` | Publie un post (texte, lien avec titre/description, visibilité, blocage du repartage). `author: member` (défaut, profil connecté) ou `author: organization` (au nom de la page entreprise configurée) | Share on LinkedIn ; mode organisation + Community Management API pour publier en tant que page |
 | `linkedin_delete_post` | Supprime un post | Share on LinkedIn |
 | `linkedin_comment` | Commente un post | Share on LinkedIn |
 | `linkedin_react` | Réagit à un post (like, bravo, soutien…) | Share on LinkedIn |

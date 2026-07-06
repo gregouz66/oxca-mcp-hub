@@ -173,9 +173,9 @@ if ($isOwner) {
         'autocomplete' => 'off',
     ]);
 
-    echo '<details class="disclosure"' . (!empty($settings['org_mode']) ? ' open' : '') . '><summary>Statistiques d\'une page organisation (facultatif)</summary>';
+    echo '<details class="disclosure"' . (!empty($settings['org_mode']) ? ' open' : '') . '><summary>Page organisation — publier en tant que page et statistiques (facultatif)</summary>';
     ui_checkbox('org_mode', 'Activer le mode organisation', !empty($settings['org_mode']),
-        'Ajoute les outils de statistiques (impressions, clics, engagement, abonnés) pour une page entreprise. Nécessite le produit gratuit « Community Management API » sur votre app LinkedIn, puis une reconnexion.');
+        'Permet de publier au nom de votre page entreprise (vous devez en être admin) et ajoute ses statistiques (impressions, clics, engagement, abonnés). Nécessite le produit gratuit « Community Management API » sur votre app LinkedIn, puis un clic sur « Reconnecter » pour accorder les nouvelles autorisations. Sans ce mode, les posts partent au nom de votre profil.');
     ui_field([
         'label' => 'Page organisation', 'name' => 'org_urn',
         'value' => $settings['org_urn'] ?? '',
