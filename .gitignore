@@ -1,0 +1,6 @@
+# Configuration locale (contient les secrets) — ne jamais versionner.
+config.php
+
+# Fichiers générés à l'exécution.
+storage/*
+!storage/.htaccess
