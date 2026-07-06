@@ -118,6 +118,15 @@ function ui_checkbox(string $name, string $label, bool $checked, string $hint = 
         . '</span></label>';
 }
 
+/** Bouton radio stylé (même famille visuelle que ui_checkbox, en rond). */
+function ui_radio(string $name, string $value, string $label, bool $checked, string $hint = ''): void
+{
+    echo '<label class="check"><input type="radio" name="' . e($name) . '" value="' . e($value) . '"' . ($checked ? ' checked' : '') . '>'
+        . '<span class="check-box round"></span><span>' . e($label)
+        . ($hint !== '' ? '<small class="hint">' . $hint . '</small>' : '')
+        . '</span></label>';
+}
+
 /** Valeur en lecture seule avec bouton « copier ». */
 function ui_copy_row(string $label, string $value, string $hint = ''): void
 {

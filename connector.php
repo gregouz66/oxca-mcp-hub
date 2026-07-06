@@ -54,21 +54,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($name !== '' && $name !== $config['name']) {
                 config_rename($config, mb_str_limit($name, 120));
             }
+            $oldSettings = config_settings($config);
+            $appType     = in_array($_POST['app_type'] ?? '', ['signin', 'community'], true)
+                ? $_POST['app_type'] : linkedin_app_type($oldSettings);
             $patch = [
                 'client_id' => trim((string) ($_POST['client_id'] ?? '')),
-                'org_mode'  => !empty($_POST['org_mode']),
+                'app_type'  => $appType,
+                'org_mode'  => null, // réglage remplacé par app_type
             ];
             $secret = trim((string) ($_POST['client_secret'] ?? ''));
             if ($secret !== '') { // vide = conserver l'existant
                 $patch['client_secret'] = $secret;
             }
-            $orgUrn = trim((string) ($_POST['org_urn'] ?? ''));
-            if ($orgUrn !== '' && ctype_digit($orgUrn)) {
-                $orgUrn = 'urn:li:organization:' . $orgUrn;
+            // Le champ n'est affiché que pour le type community : ne pas
+            // effacer une valeur existante quand il est absent du POST.
+            if (array_key_exists('org_urn', $_POST)) {
+                $orgUrn = trim((string) $_POST['org_urn']);
+                if ($orgUrn !== '' && ctype_digit($orgUrn)) {
+                    $orgUrn = 'urn:li:organization:' . $orgUrn;
+                }
+                $patch['org_urn'] = $orgUrn;
             }
-            $patch['org_urn'] = $orgUrn;
+            // Changer de type d'app implique une autre app LinkedIn : le token
+            // en place ne vaut plus rien, on déconnecte proprement.
+            $typeChanged = $appType !== linkedin_app_type($oldSettings) && !empty($oldSettings['access_token']);
+            if ($typeChanged) {
+                $patch += ['access_token' => null, 'token_expires_at' => null,
+                    'member_urn' => null, 'member_name' => null, 'granted_scopes' => null];
+            }
             config_update_settings($config, $patch);
-            flash('ok', 'Réglages enregistrés.');
+            flash('ok', 'Réglages enregistrés.' . ($typeChanged
+                ? ' Le type d\'app a changé : renseignez les identifiants de la nouvelle app puis cliquez « Connecter LinkedIn ».' : ''));
             redirect($back);
 
         case 'disconnect':
@@ -80,28 +96,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect($back);
 
         case 'test':
-            // Appelle GET /v2/userinfo avec le token stocké : vérifie en un clic
-            // que la connexion LinkedIn est réellement opérationnelle.
+            // Vérifie en un clic que la connexion LinkedIn est opérationnelle
+            // (endpoint d'identité adapté au type d'app : userinfo ou /v2/me).
             $settings = config_settings($config);
             if (empty($settings['access_token'])) {
                 flash('error', 'LinkedIn n\'est pas connecté sur ce connecteur.');
             } else {
                 try {
-                    [$status, , $data] = li_http('GET', 'https://api.linkedin.com/v2/userinfo', [
-                        'Authorization: Bearer ' . $settings['access_token'],
-                    ]);
+                    $identity = li_fetch_identity($settings, (string) $settings['access_token']);
+                    flash('ok', 'Connexion opérationnelle — LinkedIn répond : '
+                        . ($identity['name'] !== '' ? $identity['name'] : '?')
+                        . ($identity['email'] !== null ? ' <' . $identity['email'] . '>' : '')
+                        . ' (' . $identity['urn'] . ').');
                 } catch (RuntimeException $e) {
-                    flash('error', $e->getMessage());
-                    redirect($back);
-                }
-                if ($status === 200 && !empty($data['sub'])) {
-                    flash('ok', 'Connexion opérationnelle — /v2/userinfo répond : '
-                        . ($data['name'] ?? '?') . (isset($data['email']) ? ' <' . $data['email'] . '>' : '')
-                        . ' (urn:li:person:' . $data['sub'] . ').');
-                } else {
-                    flash('error', 'GET /v2/userinfo a répondu HTTP ' . $status . ' : '
-                        . ($data['message'] ?? $data['error'] ?? 'réponse vide')
-                        . ' — reconnectez LinkedIn ; si l\'erreur persiste, vérifiez les produits activés sur votre app.');
+                    flash('error', $e->getMessage()
+                        . ' Reconnectez LinkedIn ; si l\'erreur persiste, vérifiez les produits activés sur votre app.');
                 }
             }
             redirect($back);
@@ -156,6 +165,14 @@ if ($isOwner) {
 
     ui_field(['label' => 'Nom du connecteur', 'name' => 'name', 'value' => $config['name'], 'required' => true]);
 
+    $appType = linkedin_app_type($settings);
+    echo '<div class="field"><span class="field-label">Type d\'app LinkedIn</span>';
+    ui_radio('app_type', 'signin', 'Profil — « Sign In with LinkedIn » + « Share on LinkedIn »', $appType === 'signin',
+        'Les deux produits s\'ajoutent instantanément sur votre app. Publication au nom de votre profil uniquement ; pas de statistiques.');
+    ui_radio('app_type', 'community', 'Community Management API — app LinkedIn dédiée', $appType === 'community',
+        'Publication au nom du profil <strong>et</strong> d\'une page entreprise, statistiques de vos posts personnels et de la page. Règle LinkedIn : ce produit doit être <strong>le seul</strong> de l\'app — créez une app séparée pour lui (accès gratuit, sur demande). Après un changement de type : Enregistrer, saisir les identifiants de la nouvelle app, puis Connecter.');
+    echo '</div>';
+
     if ($hasInstanceApp) {
         echo '<p class="hint" style="margin-bottom:18px">' . ui_icon('check')
             . ' Cette instance fournit déjà une app LinkedIn : vous n\'avez rien à renseigner ci-dessous, sauf pour utiliser la vôtre.</p>';
@@ -173,16 +190,14 @@ if ($isOwner) {
         'autocomplete' => 'off',
     ]);
 
-    echo '<details class="disclosure"' . (!empty($settings['org_mode']) ? ' open' : '') . '><summary>Page organisation — publier en tant que page et statistiques (facultatif)</summary>';
-    ui_checkbox('org_mode', 'Activer le mode organisation', !empty($settings['org_mode']),
-        'Permet de publier au nom de votre page entreprise (vous devez en être admin) et ajoute ses statistiques (impressions, clics, engagement, abonnés). Nécessite le produit gratuit « Community Management API » sur votre app LinkedIn, puis un clic sur « Reconnecter » pour accorder les nouvelles autorisations. Sans ce mode, les posts partent au nom de votre profil.');
-    ui_field([
-        'label' => 'Page organisation', 'name' => 'org_urn',
-        'value' => $settings['org_urn'] ?? '',
-        'placeholder' => 'urn:li:organization:12345678 ou simplement 12345678',
-        'hint' => 'L\'identifiant apparaît dans l\'URL d\'admin de votre page : linkedin.com/company/<strong>12345678</strong>/admin.',
-    ]);
-    echo '</details>';
+    if ($appType === 'community') {
+        ui_field([
+            'label' => 'Page organisation (facultatif)', 'name' => 'org_urn',
+            'value' => $settings['org_urn'] ?? '',
+            'placeholder' => 'urn:li:organization:12345678 ou simplement 12345678',
+            'hint' => 'Nécessaire uniquement pour publier en tant que page et consulter ses statistiques — vous devez être <strong>admin</strong> de la page. L\'identifiant apparaît dans l\'URL d\'admin : linkedin.com/company/<strong>12345678</strong>/admin.',
+        ]);
+    }
 
     echo '<div style="margin-top:20px"><button type="submit" class="btn btn-primary">Enregistrer</button></div></form>';
     ui_card_close();

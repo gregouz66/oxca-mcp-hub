@@ -261,6 +261,14 @@ svg { flex: none; vertical-align: middle; }
   box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+.check-box.round { border-radius: 50%; }
+.check-box.round::after {
+  content: ""; width: 9px; height: 9px; border-radius: 50%;
+  background: #fff; opacity: 0; transform: scale(.5);
+  transition: opacity .2s var(--ease), transform .2s var(--ease);
+}
+.check input:checked + .check-box.round::after { opacity: 1; transform: scale(1); }
+
 .copy-row { display: flex; gap: 8px; }
 .copy-row .input { flex: 1; min-width: 0; }
 

@@ -46,27 +46,44 @@ function linkedin_client_secret(array $settings): string
 const LINKEDIN_OAUTH_REDIRECT = '/oauth-linkedin.php';
 
 /**
+ * Type d'app LinkedIn du connecteur :
+ *   'signin'    — produits « Sign In with LinkedIn » + « Share on LinkedIn »
+ *                 (ajout instantané) : publication au nom du profil uniquement.
+ *   'community' — app dédiée au seul produit « Community Management API »
+ *                 (règle LinkedIn : il doit être l'unique produit de l'app) :
+ *                 publication profil + page, statistiques des posts personnels
+ *                 et de la page.
+ */
+function linkedin_app_type(array $settings): string
+{
+    return ($settings['app_type'] ?? '') === 'community' ? 'community' : 'signin';
+}
+
+/**
  * Scopes OAuth demandés, avec le produit LinkedIn qui fournit chacun.
  * Sert au flux OAuth et à l'affichage de diagnostic sur la page connecteur.
  */
 function linkedin_scopes(array $settings): array
 {
-    $scopes = [
+    if (linkedin_app_type($settings) === 'community') {
+        // La Community Management API fournit à elle seule l'identité
+        // (r_basicprofile — pas d'openid sur ce produit), la publication
+        // membre et page, et les statistiques.
+        return [
+            'r_basicprofile'         => 'Community Management API',
+            'w_member_social'        => 'Community Management API',
+            'w_organization_social'  => 'Community Management API',
+            'r_organization_social'  => 'Community Management API',
+            'rw_organization_admin'  => 'Community Management API',
+            'r_member_postAnalytics' => 'Community Management API',
+        ];
+    }
+    return [
         'openid'          => 'Sign In with LinkedIn using OpenID Connect',
         'profile'         => 'Sign In with LinkedIn using OpenID Connect',
         'email'           => 'Sign In with LinkedIn using OpenID Connect',
         'w_member_social' => 'Share on LinkedIn',
     ];
-    if (!empty($settings['org_mode'])) {
-        // rw_organization_admin est requis pour les statistiques de reporting
-        // et le nombre d'abonnés ; r/w_organization_social ne suffisent pas.
-        $scopes += [
-            'r_organization_social' => 'Community Management API',
-            'w_organization_social' => 'Community Management API',
-            'rw_organization_admin' => 'Community Management API',
-        ];
-    }
-    return $scopes;
 }
 
 /** URL d'autorisation LinkedIn (démarrage du flux OAuth). */
@@ -106,24 +123,55 @@ function linkedin_oauth_exchange(array $settings, string $code): array
 
     $token     = (string) $data['access_token'];
     $expiresAt = gmdate('Y-m-d H:i:s', time() + (int) ($data['expires_in'] ?? 5184000));
-
-    [$uStatus, , $userinfo] = li_http('GET', 'https://api.linkedin.com/v2/userinfo', [
-        'Authorization: Bearer ' . $token,
-    ]);
-    if ($uStatus !== 200 || empty($userinfo['sub'])) {
-        throw new RuntimeException('Le token a bien été obtenu mais GET /v2/userinfo a répondu HTTP '
-            . $uStatus . ' : ' . ($userinfo['message'] ?? $userinfo['error'] ?? 'réponse vide')
-            . ' — le scope openid a-t-il été accordé (produit « Sign In with LinkedIn using OpenID Connect ») ?');
-    }
+    $identity  = li_fetch_identity($settings, $token);
 
     return [
         'access_token'     => $token,
         'token_expires_at' => $expiresAt,
         // Scopes réellement accordés par LinkedIn, affichés pour diagnostic.
         'granted_scopes'   => (string) ($data['scope'] ?? ''),
-        'member_urn'       => 'urn:li:person:' . $userinfo['sub'],
-        'member_name'      => trim(($userinfo['name'] ?? '') !== '' ? $userinfo['name']
-            : (($userinfo['given_name'] ?? '') . ' ' . ($userinfo['family_name'] ?? ''))),
+        'member_urn'       => $identity['urn'],
+        'member_name'      => $identity['name'],
+    ];
+}
+
+/**
+ * Identité du membre pour un token donné, selon le type d'app :
+ * /v2/userinfo (scope openid, type « signin ») ou /v2/me (scope
+ * r_basicprofile, app Community Management API — sans OpenID).
+ * Lève RuntimeException avec un message actionnable.
+ */
+function li_fetch_identity(array $settings, string $token): array
+{
+    if (linkedin_app_type($settings) === 'community') {
+        [$status, , $me] = li_http('GET', 'https://api.linkedin.com/v2/me', [
+            'Authorization: Bearer ' . $token,
+        ]);
+        if ($status !== 200 || empty($me['id'])) {
+            throw new RuntimeException('GET /v2/me a répondu HTTP ' . $status . ' : '
+                . ($me['message'] ?? $me['error'] ?? 'réponse vide')
+                . ' — le scope r_basicprofile a-t-il été accordé (produit « Community Management API ») ?');
+        }
+        return [
+            'urn'   => 'urn:li:person:' . $me['id'],
+            'name'  => trim(($me['localizedFirstName'] ?? '') . ' ' . ($me['localizedLastName'] ?? '')),
+            'email' => null,
+        ];
+    }
+
+    [$status, , $u] = li_http('GET', 'https://api.linkedin.com/v2/userinfo', [
+        'Authorization: Bearer ' . $token,
+    ]);
+    if ($status !== 200 || empty($u['sub'])) {
+        throw new RuntimeException('GET /v2/userinfo a répondu HTTP ' . $status . ' : '
+            . ($u['message'] ?? $u['error'] ?? 'réponse vide')
+            . ' — le scope openid a-t-il été accordé (produit « Sign In with LinkedIn using OpenID Connect ») ?');
+    }
+    return [
+        'urn'   => 'urn:li:person:' . $u['sub'],
+        'name'  => trim(($u['name'] ?? '') !== '' ? $u['name']
+            : (($u['given_name'] ?? '') . ' ' . ($u['family_name'] ?? ''))),
+        'email' => $u['email'] ?? null,
     ];
 }
 
@@ -135,12 +183,12 @@ function linkedin_tools(array $settings): array
     $tools = [
         [
             'name'        => 'linkedin_create_post',
-            'description' => 'Publie un post LinkedIn. Par défaut au nom du profil connecté ; avec author=organization, au nom de la page entreprise configurée (mode organisation requis). Peut inclure un lien (article) avec titre et description. Retourne l\'URN et l\'URL publique du post.',
+            'description' => 'Publie un post LinkedIn. Par défaut au nom du profil connecté ; avec author=organization, au nom de la page entreprise configurée (connecteur de type Community Management API requis). Peut inclure un lien (article) avec titre et description. Retourne l\'URN et l\'URL publique du post.',
             'inputSchema' => [
                 'type'       => 'object',
                 'properties' => [
                     'text' => ['type' => 'string', 'description' => 'Texte du post (max ~3000 caractères).'],
-                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite le mode organisation activé et une reconnexion LinkedIn avec le scope w_organization_social).'],
+                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite un connecteur de type Community Management API avec la page renseignée).'],
                     'link_url' => ['type' => 'string', 'description' => 'URL à partager (facultatif).'],
                     'link_title' => ['type' => 'string', 'description' => 'Titre affiché pour le lien (facultatif).'],
                     'link_description' => ['type' => 'string', 'description' => 'Description affichée pour le lien (facultatif).'],
@@ -192,7 +240,27 @@ function linkedin_tools(array $settings): array
         ],
     ];
 
-    if (!empty($settings['org_mode'])) {
+    if (linkedin_app_type($settings) === 'community') {
+        $tools[] = [
+            'name'        => 'linkedin_my_post_stats',
+            'description' => 'Statistiques de VOS posts personnels : impressions, membres atteints, réactions, commentaires, repartages. Sans post_urn : cumul sur l\'ensemble de vos posts ; avec post_urn : détail d\'un post. Période optionnelle (sinon : depuis toujours).',
+            'inputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'post_urn' => ['type' => 'string', 'description' => 'URN d\'un post précis (urn:li:share:… ou urn:li:ugcPost:…). Facultatif : sans lui, cumul de tous vos posts.'],
+                    'metrics' => [
+                        'type'        => 'array',
+                        'items'       => ['type' => 'string', 'enum' => ['IMPRESSION', 'MEMBERS_REACHED', 'RESHARE', 'REACTION', 'COMMENT']],
+                        'description' => 'Métriques à récupérer (défaut : les cinq).',
+                    ],
+                    'start_date' => ['type' => 'string', 'description' => 'Début de période AAAA-MM-JJ (inclus). Facultatif.'],
+                    'end_date'   => ['type' => 'string', 'description' => 'Fin de période AAAA-MM-JJ (exclue). Facultatif.'],
+                ],
+            ],
+        ];
+    }
+
+    if (linkedin_app_type($settings) === 'community' && trim((string) ($settings['org_urn'] ?? '')) !== '') {
         $tools[] = [
             'name'        => 'linkedin_org_share_stats',
             'description' => 'Statistiques de la page organisation LinkedIn : impressions, clics, réactions, commentaires, partages, taux d\'engagement. Sans argument : cumul sur l\'ensemble des posts ; avec post_urns : détail par post. Nécessite la Community Management API (gratuite sur demande).',
@@ -230,6 +298,7 @@ function linkedin_call(array $config, string $name, array $args): array
         'linkedin_comment'            => li_tool_comment($settings, $args),
         'linkedin_react'              => li_tool_react($settings, $args),
         'linkedin_get_profile'        => li_tool_profile($settings),
+        'linkedin_my_post_stats'      => li_tool_my_post_stats($settings, $args),
         'linkedin_org_share_stats'    => li_tool_org_share_stats($settings, $args),
         'linkedin_org_follower_count' => li_tool_org_follower_count($settings),
         default => throw new McpError(-32602, 'Unknown tool: ' . $name),
@@ -357,25 +426,110 @@ function li_tool_profile(array $settings): array
 {
     li_require_connection($settings);
 
-    [$status, , $data] = li_http('GET', 'https://api.linkedin.com/v2/userinfo', [
-        'Authorization: Bearer ' . $settings['access_token'],
-    ]);
-    if ($status !== 200) {
-        throw li_api_error('Lecture du profil refusée', $status, $data);
+    try {
+        $identity = li_fetch_identity($settings, (string) $settings['access_token']);
+    } catch (RuntimeException $e) {
+        throw new McpToolError('Lecture du profil refusée : ' . $e->getMessage());
     }
 
     $lines = [
         'Profil LinkedIn connecté :',
-        '- Nom : ' . ($data['name'] ?? '—'),
-        '- Email : ' . ($data['email'] ?? '—'),
-        '- URN : urn:li:person:' . ($data['sub'] ?? '—'),
+        '- Nom : ' . ($identity['name'] !== '' ? $identity['name'] : '—'),
+        '- Email : ' . ($identity['email'] ?? '—'),
+        '- URN : ' . $identity['urn'],
         '- Token valable jusqu\'au : ' . ($settings['token_expires_at'] ?? '—') . ' UTC',
     ];
-    return mcp_tool_result(implode("\n", $lines), [
-        'name'  => $data['name'] ?? null,
-        'email' => $data['email'] ?? null,
-        'urn'   => 'urn:li:person:' . ($data['sub'] ?? ''),
-    ]);
+    return mcp_tool_result(implode("\n", $lines), $identity);
+}
+
+function li_tool_my_post_stats(array $settings, array $args): array
+{
+    li_require_connection($settings);
+    if (linkedin_app_type($settings) !== 'community') {
+        throw new McpToolError('Les statistiques de posts personnels nécessitent un connecteur de type « Community Management API » (voir Réglages sur la page du connecteur).');
+    }
+
+    $allowed = ['IMPRESSION', 'MEMBERS_REACHED', 'RESHARE', 'REACTION', 'COMMENT'];
+    $metrics = array_values(array_intersect(
+        array_map('strval', (array) ($args['metrics'] ?? $allowed)),
+        $allowed
+    )) ?: $allowed;
+
+    // Cible : un post précis (finder « entity ») ou tous les posts du membre
+    // (finder « me »). Encodage Restli 2.0 : entity=(share:urn%3Ali%3A…).
+    $urn = trim((string) ($args['post_urn'] ?? ''));
+    if ($urn !== '') {
+        $key = str_starts_with($urn, 'urn:li:ugcPost:') ? 'ugc'
+            : (str_starts_with($urn, 'urn:li:share:') ? 'share' : null);
+        if ($key === null) {
+            throw new McpToolError('Argument « post_urn » invalide : URN attendu commençant par urn:li:share: ou urn:li:ugcPost:.');
+        }
+        $target = 'q=entity&entity=(' . $key . ':' . rawurlencode($urn) . ')';
+    } else {
+        $target = 'q=me';
+    }
+    $range = li_date_range_param((string) ($args['start_date'] ?? ''), (string) ($args['end_date'] ?? ''));
+    if ($range !== '') {
+        $target .= '&dateRange=' . $range;
+    }
+
+    // L'endpoint n'accepte qu'une métrique par appel (queryType).
+    $stats = [];
+    foreach ($metrics as $metric) {
+        [$status, , $data] = li_rest(
+            $settings,
+            'GET',
+            '/rest/memberCreatorPostAnalytics?' . $target . '&queryType=' . $metric . '&aggregation=TOTAL'
+        );
+        if ($status !== 200) {
+            throw li_api_error("Statistique $metric indisponible", $status, $data);
+        }
+        $count = 0;
+        foreach (($data['elements'] ?? []) as $el) {
+            $count += (int) ($el['count'] ?? 0);
+        }
+        $stats[$metric] = $count;
+    }
+
+    $labels = [
+        'IMPRESSION'      => 'impressions',
+        'MEMBERS_REACHED' => 'membres atteints',
+        'RESHARE'         => 'repartages',
+        'REACTION'        => 'réactions',
+        'COMMENT'         => 'commentaires',
+    ];
+    $lines = [$urn !== '' ? "Statistiques du post $urn :" : 'Statistiques cumulées de vos posts :'];
+    foreach ($stats as $metric => $count) {
+        $lines[] = '- ' . $labels[$metric] . ' : ' . $count;
+    }
+    if ($range !== '') {
+        $lines[] = 'Période : ' . ($args['start_date'] ?? 'début') . ' → ' . ($args['end_date'] ?? 'aujourd\'hui') . ' (fin exclue)';
+    }
+    return mcp_tool_result(implode("\n", $lines), ['post_urn' => $urn ?: null, 'stats' => $stats]);
+}
+
+/** Paramètre Restli dateRange=(start:(day:J,month:M,year:A),end:(…)) à partir de dates AAAA-MM-JJ. */
+function li_date_range_param(string $start, string $end): string
+{
+    $part = function (string $date): ?string {
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $date, $m)) {
+            return null;
+        }
+        return sprintf('(day:%d,month:%d,year:%d)', (int) $m[3], (int) $m[2], (int) $m[1]);
+    };
+    $s = $part($start);
+    $e = $part($end);
+    if ($s === null && $e === null) {
+        return '';
+    }
+    $inner = [];
+    if ($s !== null) {
+        $inner[] = 'start:' . $s;
+    }
+    if ($e !== null) {
+        $inner[] = 'end:' . $e;
+    }
+    return '(' . implode(',', $inner) . ')';
 }
 
 function li_tool_org_share_stats(array $settings, array $args): array
@@ -459,9 +613,12 @@ function li_require_connection(array $settings): void
 /** Vérifie que le mode organisation est configuré. Retourne l'URN de l'organisation. */
 function li_require_org(array $settings): string
 {
+    if (linkedin_app_type($settings) !== 'community') {
+        throw new McpToolError('Les actions au nom d\'une page nécessitent un connecteur de type « Community Management API » : sur la page du connecteur, sélectionnez ce type (app LinkedIn dédiée), enregistrez puis reconnectez.');
+    }
     $orgUrn = trim((string) ($settings['org_urn'] ?? ''));
-    if (empty($settings['org_mode']) || $orgUrn === '') {
-        throw new McpToolError('Cette action au nom d\'une page nécessite le mode organisation : sur la page du connecteur, activez « mode organisation », renseignez l\'identifiant de votre page (urn:li:organization:…), enregistrez puis cliquez « Reconnecter » pour accorder les autorisations de page.');
+    if ($orgUrn === '') {
+        throw new McpToolError('Renseignez l\'identifiant de votre page organisation (urn:li:organization:…) dans les réglages du connecteur, puis réessayez.');
     }
     return $orgUrn;
 }

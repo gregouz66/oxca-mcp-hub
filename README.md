@@ -98,49 +98,56 @@ meilleure délivrabilité (SPF/DKIM configurés chez l'hébergeur).
 
 ## Créer votre app LinkedIn (gratuite)
 
-Chaque utilisateur crée sa propre app LinkedIn (2 minutes, gratuit), **ou**
+Chaque utilisateur crée sa propre app LinkedIn (gratuit), **ou**
 l'administrateur de l'instance en déclare une pour tout le monde via
 `LINKEDIN_DEFAULT_CLIENT_ID` / `LINKEDIN_DEFAULT_CLIENT_SECRET` dans
 `config.php` — les utilisateurs n'ont alors plus rien à saisir.
 
+Le connecteur propose **deux types d'app** (réglage sur la page du
+connecteur), qui correspondent aux deux offres gratuites de LinkedIn :
+
+| | Type « Profil » (défaut) | Type « Community Management API » |
+|---|---|---|
+| Produits LinkedIn | *Sign In with LinkedIn using OpenID Connect* + *Share on LinkedIn* | *Community Management API* **seule** |
+| Activation | Immédiate (self-serve) | Sur demande (formulaire, review LinkedIn de quelques jours) |
+| Publier au nom du profil | ✅ | ✅ |
+| Publier au nom d'une page entreprise | ❌ | ✅ (`author: organization`, être admin de la page) |
+| Statistiques de vos posts personnels | ❌ | ✅ (impressions, membres atteints, réactions, commentaires, repartages) |
+| Statistiques et abonnés de la page | ❌ | ✅ |
+
+> ⚠️ **Règle LinkedIn** : la Community Management API doit être **le seul
+> produit** de l'app. Si votre app a déjà d'autres produits, LinkedIn
+> affiche *« This API product requires that it be the only product on the
+> application »* — créez alors une **seconde app dédiée** et demandez-y ce
+> produit. Un compte LinkedIn peut avoir plusieurs apps ; dans le hub, vous
+> pouvez soit basculer un connecteur existant sur le type Community
+> Management (avec les identifiants de la nouvelle app), soit créer un
+> second connecteur.
+
+Mise en place (identique pour les deux types) :
+
 1. Rendez-vous sur <https://developer.linkedin.com/> → **Create app**
    (une page LinkedIn — même personnelle d'entreprise — est demandée comme
    « app owner »).
-2. Onglet **Products** : ajoutez les deux produits gratuits à validation
-   immédiate :
-   - **Sign In with LinkedIn using OpenID Connect** (identité) ;
-   - **Share on LinkedIn** (publication).
+2. Onglet **Products** : ajoutez le ou les produits du type choisi
+   (tableau ci-dessus).
 3. Onglet **Auth** :
    - copiez le **Client ID** et le **Client Secret** dans la page du
      connecteur (ils ne sont demandés qu'une fois, le secret est chiffré) ;
    - dans **Authorized redirect URLs**, ajoutez l'URL affichée sur la page du
      connecteur : `https://votre-site/oauth-linkedin.php`.
-4. De retour sur la page du connecteur : **Connecter LinkedIn** → LinkedIn
-   demande votre accord → les outils sont opérationnels.
+4. De retour sur la page du connecteur : choisissez le **type d'app**,
+   enregistrez, puis **Connecter LinkedIn** → LinkedIn demande votre accord →
+   les outils sont opérationnels (bouton « Tester la connexion » pour
+   vérifier).
 
-### Ce que LinkedIn autorise gratuitement (et ce qu'il ne permet pas)
+### Bon à savoir
 
-- ✅ Publier, commenter, réagir, supprimer **au nom du profil connecté**
-  (produit *Share on LinkedIn*, scope `w_member_social`). C'est le
-  comportement par défaut : sans mode organisation, les posts partent
-  toujours au nom du **profil**, jamais d'une page.
-- ✅ **Publier au nom d'une page entreprise** dont vous êtes admin :
-  activez le mode organisation du connecteur, reconnectez LinkedIn, puis
-  demandez à Claude de publier « en tant que page » (argument
-  `author: organization`). Nécessite la *Community Management API*
-  (gratuite, sur demande).
-- ✅ **Statistiques d'une page organisation** (impressions, clics, réactions,
-  engagement, abonnés) : activez le « mode organisation » du connecteur.
-  Nécessite le produit **Community Management API** — gratuit, mais soumis à
-  une demande d'accès auprès de LinkedIn depuis l'onglet Products de votre app.
-  Une fois le produit accordé, **reconnectez LinkedIn** : le connecteur demande
-  alors les autorisations `r_organization_social`, `w_organization_social` et
-  `rw_organization_admin` (cette dernière étant requise par LinkedIn pour les
-  statistiques de reporting et le nombre d'abonnés). Vous devez être
-  **administrateur** de la page concernée.
-- ❌ LinkedIn n'expose **pas d'API de statistiques pour les posts d'un profil
-  personnel** (quelle que soit l'app, gratuite ou non) — c'est une limite de
-  LinkedIn, pas de ce projet.
+- Sans type Community Management, les posts partent toujours au nom du
+  **profil**, jamais d'une page — c'est une limite LinkedIn, pas du hub.
+- Les statistiques de posts **personnels** ne sont disponibles que via la
+  Community Management API (endpoint `memberCreatorPostAnalytics`, versions
+  d'API ≥ 202506).
 - ⏳ Les tokens LinkedIn expirent après **60 jours** : un clic sur
   « Reconnecter » suffit (l'app vous prévient sur la page du connecteur).
 
@@ -199,15 +206,16 @@ suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.
 
 ## Outils LinkedIn disponibles
 
-| Outil MCP | Description | Prérequis |
+| Outil MCP | Description | Type d'app requis |
 |---|---|---|
-| `linkedin_create_post` | Publie un post (texte, lien avec titre/description, visibilité, blocage du repartage). `author: member` (défaut, profil connecté) ou `author: organization` (au nom de la page entreprise configurée) | Share on LinkedIn ; mode organisation + Community Management API pour publier en tant que page |
-| `linkedin_delete_post` | Supprime un post | Share on LinkedIn |
-| `linkedin_comment` | Commente un post | Share on LinkedIn |
-| `linkedin_react` | Réagit à un post (like, bravo, soutien…) | Share on LinkedIn |
-| `linkedin_get_profile` | Vérifie le profil connecté (nom, email, URN) | Sign In with LinkedIn |
-| `linkedin_org_share_stats` | Impressions, clics, réactions, commentaires, partages, engagement — cumul ou par post | Mode organisation + Community Management API |
-| `linkedin_org_follower_count` | Nombre d'abonnés de la page | Mode organisation + Community Management API |
+| `linkedin_create_post` | Publie un post (texte, lien avec titre/description, visibilité, blocage du repartage). `author: member` (défaut, profil connecté) ou `author: organization` (au nom de la page entreprise configurée) | Les deux ; `author: organization` → Community Management |
+| `linkedin_delete_post` | Supprime un post | Les deux |
+| `linkedin_comment` | Commente un post | Les deux |
+| `linkedin_react` | Réagit à un post (like, bravo, soutien…) | Les deux |
+| `linkedin_get_profile` | Vérifie le profil connecté (nom, email, URN) | Les deux |
+| `linkedin_my_post_stats` | Statistiques de **vos posts personnels** : impressions, membres atteints, réactions, commentaires, repartages — cumul ou par post, période optionnelle | Community Management |
+| `linkedin_org_share_stats` | Statistiques de la page : impressions, clics, réactions, commentaires, partages, engagement — cumul ou par post | Community Management + page renseignée |
+| `linkedin_org_follower_count` | Nombre d'abonnés de la page | Community Management + page renseignée |
 
 ## Sécurité
 
@@ -305,6 +313,14 @@ immédiat pour *Share on LinkedIn*, demande d'accès pour *Community
 Management API* si mode organisation), puis relancez la connexion. Une fois
 connecté, le bouton **« Tester la connexion »** appelle `/v2/userinfo` et
 affiche le résultat.
+
+**LinkedIn : « This API product requires that it be the only product on the
+application »** — en demandant la Community Management API sur une app qui a
+déjà d'autres produits (ou demandes en attente). C'est une règle LinkedIn :
+créez une **nouvelle app** dédiée (Create app), demandez-y uniquement la
+Community Management API, déclarez la même URL de redirection, puis dans le
+hub passez le connecteur (ou un second connecteur) en type « Community
+Management API » avec le Client ID / Secret de cette nouvelle app.
 
 **LinkedIn : `invalid redirect_uri`** — l'URL de redirection déclarée dans
 l'app LinkedIn doit être exactement `APP_URL/oauth-linkedin.php` (HTTPS,
