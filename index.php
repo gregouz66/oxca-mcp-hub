@@ -7,7 +7,7 @@ if (current_user()) {
     redirect('/dashboard.php');
 }
 
-ui_top('Accueil');
+ui_top('Accueil', null, true);
 ?>
 
 <div class="hero rise">
