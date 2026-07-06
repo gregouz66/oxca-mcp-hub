@@ -45,23 +45,42 @@ function linkedin_client_secret(array $settings): string
 
 const LINKEDIN_OAUTH_REDIRECT = '/oauth-linkedin.php';
 
+/**
+ * Scopes OAuth demandés, avec le produit LinkedIn qui fournit chacun.
+ * Sert au flux OAuth et à l'affichage de diagnostic sur la page connecteur.
+ */
+function linkedin_scopes(array $settings): array
+{
+    $scopes = [
+        'openid'          => 'Sign In with LinkedIn using OpenID Connect',
+        'profile'         => 'Sign In with LinkedIn using OpenID Connect',
+        'email'           => 'Sign In with LinkedIn using OpenID Connect',
+        'w_member_social' => 'Share on LinkedIn',
+    ];
+    if (!empty($settings['org_mode'])) {
+        // rw_organization_admin est requis pour les statistiques de reporting
+        // et le nombre d'abonnés ; r/w_organization_social ne suffisent pas.
+        $scopes += [
+            'r_organization_social' => 'Community Management API',
+            'w_organization_social' => 'Community Management API',
+            'rw_organization_admin' => 'Community Management API',
+        ];
+    }
+    return $scopes;
+}
+
 /** URL d'autorisation LinkedIn (démarrage du flux OAuth). */
 function linkedin_oauth_url(array $settings, string $state): string
 {
-    $scopes = 'openid profile email w_member_social';
-    if (!empty($settings['org_mode'])) {
-        // rw_organization_admin est requis pour les statistiques de reporting
-        // et le nombre d'abonnés (Community Management API) ; r/w_organization_social
-        // ne suffit pas pour ces endpoints.
-        $scopes .= ' r_organization_social w_organization_social rw_organization_admin';
-    }
+    // PHP_QUERY_RFC3986 : la doc LinkedIn exige un scope « URL-encoded,
+    // space-delimited » avec %20 (pas +).
     return 'https://www.linkedin.com/oauth/v2/authorization?' . http_build_query([
         'response_type' => 'code',
         'client_id'     => linkedin_client_id($settings),
         'redirect_uri'  => base_url(LINKEDIN_OAUTH_REDIRECT),
-        'scope'         => $scopes,
+        'scope'         => implode(' ', array_keys(linkedin_scopes($settings))),
         'state'         => $state,
-    ]);
+    ], '', '&', PHP_QUERY_RFC3986);
 }
 
 /**
@@ -80,8 +99,9 @@ function linkedin_oauth_exchange(array $settings, string $code): array
         'redirect_uri'  => base_url(LINKEDIN_OAUTH_REDIRECT),
     ]));
     if ($status !== 200 || empty($data['access_token'])) {
-        throw new RuntimeException('Échange du code OAuth refusé par LinkedIn : '
-            . ($data['error_description'] ?? $data['error'] ?? "HTTP $status"));
+        throw new RuntimeException('Échange du code OAuth refusé par LinkedIn (HTTP ' . $status . ') : '
+            . ($data['error_description'] ?? $data['error'] ?? 'réponse vide')
+            . ' — vérifiez que le Client ID / Client Secret correspondent à votre app et que l\'URL de redirection déclarée est exactement celle affichée sur cette page.');
     }
 
     $token     = (string) $data['access_token'];
@@ -91,12 +111,16 @@ function linkedin_oauth_exchange(array $settings, string $code): array
         'Authorization: Bearer ' . $token,
     ]);
     if ($uStatus !== 200 || empty($userinfo['sub'])) {
-        throw new RuntimeException('Impossible de récupérer le profil LinkedIn (userinfo).');
+        throw new RuntimeException('Le token a bien été obtenu mais GET /v2/userinfo a répondu HTTP '
+            . $uStatus . ' : ' . ($userinfo['message'] ?? $userinfo['error'] ?? 'réponse vide')
+            . ' — le scope openid a-t-il été accordé (produit « Sign In with LinkedIn using OpenID Connect ») ?');
     }
 
     return [
         'access_token'     => $token,
         'token_expires_at' => $expiresAt,
+        // Scopes réellement accordés par LinkedIn, affichés pour diagnostic.
+        'granted_scopes'   => (string) ($data['scope'] ?? ''),
         'member_urn'       => 'urn:li:person:' . $userinfo['sub'],
         'member_name'      => trim(($userinfo['name'] ?? '') !== '' ? $userinfo['name']
             : (($userinfo['given_name'] ?? '') . ' ' . ($userinfo['family_name'] ?? ''))),

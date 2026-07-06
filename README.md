@@ -282,9 +282,22 @@ un compte email de votre hébergeur ; vérifiez le dossier spam ; en dev, mettez
 correspond exactement au domaine utilisé (avec/sans `www`), sinon le cookie de
 session n'est pas partagé.
 
-**LinkedIn : `unauthorized_scope_error`** — le produit *Share on LinkedIn*
-(ou *Community Management API* en mode organisation) n'est pas activé sur
-votre app LinkedIn : onglet Products → Request access.
+**« Connecter LinkedIn » échoue (`unauthorized_scope_error` / « Invalid
+scope »)** — c'est l'échec le plus courant, et il vient de l'app LinkedIn,
+pas des endpoints : le hub utilise exactement ceux du [discovery document
+officiel](https://www.linkedin.com/oauth/.well-known/openid-configuration)
+(`/oauth/v2/authorization`, `/oauth/v2/accessToken`, `/v2/userinfo`).
+LinkedIn refuse l'autorisation quand un scope demandé n'est couvert par
+aucun **produit actif** de votre app. Symptôme typique : l'onglet Products
+de votre app ne liste que *Sign In with LinkedIn using OpenID Connect*
+(son tableau d'endpoints n'affiche que `/v2/userinfo`) — il manque alors
+**Share on LinkedIn**, qui fournit `w_member_social`. La page du connecteur
+affiche la liste exacte des scopes demandés et le produit requis pour
+chacun ; vérifiez que chaque produit est actif (onglet Products → ajout
+immédiat pour *Share on LinkedIn*, demande d'accès pour *Community
+Management API* si mode organisation), puis relancez la connexion. Une fois
+connecté, le bouton **« Tester la connexion »** appelle `/v2/userinfo` et
+affiche le résultat.
 
 **LinkedIn : `invalid redirect_uri`** — l'URL de redirection déclarée dans
 l'app LinkedIn doit être exactement `APP_URL/oauth-linkedin.php` (HTTPS,

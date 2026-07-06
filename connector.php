@@ -74,9 +74,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'disconnect':
             config_update_settings($config, [
                 'access_token' => null, 'token_expires_at' => null,
-                'member_urn' => null, 'member_name' => null,
+                'member_urn' => null, 'member_name' => null, 'granted_scopes' => null,
             ]);
             flash('ok', 'LinkedIn déconnecté de ce connecteur.');
+            redirect($back);
+
+        case 'test':
+            // Appelle GET /v2/userinfo avec le token stocké : vérifie en un clic
+            // que la connexion LinkedIn est réellement opérationnelle.
+            $settings = config_settings($config);
+            if (empty($settings['access_token'])) {
+                flash('error', 'LinkedIn n\'est pas connecté sur ce connecteur.');
+            } else {
+                try {
+                    [$status, , $data] = li_http('GET', 'https://api.linkedin.com/v2/userinfo', [
+                        'Authorization: Bearer ' . $settings['access_token'],
+                    ]);
+                } catch (RuntimeException $e) {
+                    flash('error', $e->getMessage());
+                    redirect($back);
+                }
+                if ($status === 200 && !empty($data['sub'])) {
+                    flash('ok', 'Connexion opérationnelle — /v2/userinfo répond : '
+                        . ($data['name'] ?? '?') . (isset($data['email']) ? ' <' . $data['email'] . '>' : '')
+                        . ' (urn:li:person:' . $data['sub'] . ').');
+                } else {
+                    flash('error', 'GET /v2/userinfo a répondu HTTP ' . $status . ' : '
+                        . ($data['message'] ?? $data['error'] ?? 'réponse vide')
+                        . ' — reconnectez LinkedIn ; si l\'erreur persiste, vérifiez les produits activés sur votre app.');
+                }
+            }
             redirect($back);
 
         case 'share':
@@ -170,13 +197,35 @@ if ($isOwner) {
                 : 'Token valable jusqu\'au ' . e(format_date($summary['expires_at'], true))
                   . ' (LinkedIn limite les tokens à 60 jours).') . '</span>'
             . '</div><div class="row-actions">';
+        ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'test'],
+            'Tester la connexion', 'btn btn-ghost btn-sm', '', 'check');
         echo '<a class="btn btn-ghost btn-sm" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('refresh') . 'Reconnecter</a>';
         ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'disconnect'], 'Déconnecter', 'btn btn-danger btn-sm');
         echo '</div></div></div>';
+        if (!empty($settings['granted_scopes'])) {
+            echo '<p class="hint">Scopes accordés par LinkedIn : <code>' . e(str_replace(',', ' ', $settings['granted_scopes'])) . '</code></p>';
+        }
     } else {
         $ready = linkedin_client_id($settings) !== '' && linkedin_client_secret($settings) !== '';
-        echo '<p class="muted" style="margin-bottom:16px">Autorisez l\'application à publier en votre nom.'
-            . ' LinkedIn vous demandera votre accord (produits gratuits « Sign In with LinkedIn » et « Share on LinkedIn »).</p>';
+        echo '<p class="muted" style="margin-bottom:16px">Autorisez l\'application à publier en votre nom :'
+            . ' LinkedIn affichera un écran de consentement pour les autorisations ci-dessous.</p>';
+
+        // Diagnostic : chaque scope demandé doit être couvert par un produit
+        // actif sur l'app LinkedIn, sinon LinkedIn refuse l'autorisation
+        // (« Invalid scope ») avant même l'écran de consentement.
+        $byProduct = [];
+        foreach (linkedin_scopes($settings) as $scope => $product) {
+            $byProduct[$product][] = $scope;
+        }
+        echo '<div class="rows" style="margin-bottom:16px">';
+        foreach ($byProduct as $product => $scopes) {
+            echo '<div class="row"><div class="row-main">'
+                . '<strong><code>' . e(implode(' ', $scopes)) . '</code></strong>'
+                . '<span>Nécessite le produit « ' . e($product) . ' » (onglet Products de votre app LinkedIn).</span>'
+                . '</div></div>';
+        }
+        echo '</div>';
+
         if ($ready) {
             echo '<a class="btn btn-primary" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('linkedin') . 'Connecter LinkedIn</a>';
         } else {

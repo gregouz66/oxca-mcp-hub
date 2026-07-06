@@ -48,9 +48,20 @@ if (!$config || (int) $config['owner_id'] !== (int) $user['id']) {
 $back = '/connector.php?id=' . $config['id'];
 
 if (isset($_GET['error'])) {
-    flash('error', 'LinkedIn a refusé l\'autorisation : '
-        . (string) ($_GET['error_description'] ?? $_GET['error'])
-        . ' — vérifiez que les produits requis sont activés sur votre app (voir README).');
+    $code = (string) $_GET['error'];
+    $desc = (string) ($_GET['error_description'] ?? '');
+    // Diagnostic ciblé : le cas de loin le plus fréquent est un scope refusé
+    // parce que le produit LinkedIn correspondant n'est pas activé sur l'app.
+    $hint = match (true) {
+        str_contains($code, 'scope') || stripos($desc, 'scope') !== false
+            => 'Votre app LinkedIn n\'autorise pas encore tous les scopes demandés (liste affichée sur la page du connecteur). Le plus souvent il manque le produit « Share on LinkedIn » — onglet Products de votre app, ajout immédiat — qui fournit w_member_social. Ajoutez-le puis réessayez.',
+        $code === 'user_cancelled_login' || $code === 'user_cancelled_authorize'
+            => 'Vous avez annulé sur l\'écran LinkedIn. Relancez « Connecter LinkedIn » quand vous voulez.',
+        default
+            => 'Vérifiez les produits activés sur votre app et l\'URL de redirection déclarée (voir README, section Dépannage).',
+    };
+    flash('error', 'LinkedIn a refusé l\'autorisation [' . $code . ']'
+        . ($desc !== '' ? ' : ' . $desc : '') . ' — ' . $hint);
     redirect($back);
 }
 if (!isset($_GET['code'])) {
