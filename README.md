@@ -83,6 +83,12 @@ Aucune dépendance externe : déposez les fichiers, c'est tout.
 5. **Connectez-vous** sur `https://votre-site/` avec votre adresse email —
    le code de connexion arrive dans votre boîte. C'est terminé.
 
+> 📄 Le hub inclut des pages **Mentions légales** (`mentions-legales.php`) et
+> **Politique de confidentialité** (`confidentialite.php`), liées dans le pied
+> de page. La seconde sert d'URL de politique de confidentialité pour votre
+> app LinkedIn. Si vous forkez ce projet, **remplacez l'identité de l'éditeur
+> et l'hébergeur** dans ces deux fichiers par les vôtres.
+
 ## Configuration email
 
 Le transport se choisit dans `config.php` via `MAIL_DRIVER` :
@@ -128,7 +134,9 @@ Mise en place (identique pour les deux types) :
 
 1. Rendez-vous sur <https://developer.linkedin.com/> → **Create app**
    (une page LinkedIn — même personnelle d'entreprise — est demandée comme
-   « app owner »).
+   « app owner »). Dans le champ **Privacy policy URL** (création puis onglet
+   Settings), renseignez la page fournie par le hub :
+   `https://votre-site/confidentialite.php`.
 2. Onglet **Products** : ajoutez le ou les produits du type choisi
    (tableau ci-dessus).
 3. Onglet **Auth** :
@@ -242,6 +250,8 @@ suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.
 ├── connector.php           Gestion d'un connecteur (réglages, partage, endpoint)
 ├── oauth-linkedin.php      Flux OAuth LinkedIn
 ├── mcp.php                 Endpoint MCP public (Streamable HTTP, JSON-RPC 2.0)
+├── mentions-legales.php    Mentions légales (⚠️ adaptez l'identité si vous forkez)
+├── confidentialite.php     Politique de confidentialité — URL à donner à LinkedIn
 ├── install.php             Installateur (à supprimer après usage)
 ├── config.sample.php       Modèle de configuration
 ├── schema.sql              Schéma MySQL

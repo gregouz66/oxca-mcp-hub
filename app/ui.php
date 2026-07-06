@@ -37,7 +37,11 @@ function ui_top(string $title, ?array $user = null, bool $wide = false): void
 function ui_bottom(): void
 {
     echo '</main>'
-        . '<footer class="footer">' . e(APP_NAME) . ' · connecteurs MCP auto-hébergés pour Claude</footer>'
+        . '<footer class="footer">' . e(APP_NAME) . ' · connecteurs MCP auto-hébergés pour Claude'
+        . '<nav class="footer-links">'
+        . '<a href="' . e(base_url('/mentions-legales.php')) . '">Mentions légales</a>'
+        . '<a href="' . e(base_url('/confidentialite.php')) . '">Confidentialité</a>'
+        . '</nav></footer>'
         . '<script src="' . e(base_url('/assets/js/app.js')) . '?v=' . APP_VERSION . '"></script>'
         . '</body></html>';
 }
