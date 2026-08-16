@@ -177,10 +177,49 @@ function li_fetch_identity(array $settings, string $token): array
 
 /* ---------------------------------------------------- Définition outils */
 
-/** Liste des outils MCP exposés (les outils « organisation » exigent org_mode). */
-function linkedin_tools(array $settings): array
+/**
+ * Catalogue complet des outils LinkedIn — y compris ceux que la configuration
+ * actuelle n'expose pas, avec ce qu'il faut faire pour les débloquer.
+ *
+ * Au-delà des champs MCP (name, description, inputSchema, outputSchema),
+ * chaque entrée porte :
+ *   - available : l'outil est-il exposé avec les réglages actuels ;
+ *   - requires  : conditions à remplir pour l'exposer (vide si aucune) ;
+ *   - errors    : erreurs métier propres à cet outil.
+ *
+ * C'est le format que lit la page de documentation (tools.php) : tout type de
+ * MCP qui expose une fonction « catalog_fn » de cette forme y est documenté
+ * sans code supplémentaire.
+ */
+function linkedin_tool_catalog(array $settings): array
 {
-    $tools = [
+    $community = linkedin_app_type($settings) === 'community';
+    $withOrg   = $community && trim((string) ($settings['org_urn'] ?? '')) !== '';
+
+    $needCommunity = 'Connecteur de type « Community Management API » : à choisir dans les réglages du connecteur, avec une app LinkedIn dédiée.';
+    $needOrg       = 'Page organisation renseignée dans les réglages (urn:li:organization:… — vous devez être admin de la page).';
+
+    // Fragments communs aux deux outils de publication.
+    $authorArg = ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite un connecteur de type Community Management API avec la page renseignée).'];
+    $visibilityArg = ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC ; ignoré pour une page, toujours publique).'];
+    $reshareArg = ['type' => 'boolean', 'description' => 'Interdire le repartage (défaut : false).'];
+    $postOutput = [
+        'type'       => 'object',
+        'properties' => [
+            'post_urn'   => ['type' => 'string', 'description' => 'URN du post créé (urn:li:share:… ou urn:li:ugcPost:…), à réutiliser avec linkedin_delete_post, linkedin_comment ou linkedin_react.'],
+            'post_url'   => ['type' => 'string', 'description' => 'URL publique du post.'],
+            'author'     => ['type' => 'string', 'description' => 'URN de l\'auteur retenu (profil ou page).'],
+            'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité effectivement appliquée.'],
+        ],
+        'required' => ['post_urn', 'post_url', 'author', 'visibility'],
+    ];
+    $postErrors = [
+        'Le texte du post est vide.',
+        'Le token LinkedIn actuel n\'a pas le scope w_organization_social (author=organization sans autorisation de page).',
+        'HTTP 422 — contenu refusé par LinkedIn : doublon récent ou contenu invalide.',
+    ];
+
+    $catalog = [
         [
             'name'        => 'linkedin_create_post',
             'description' => 'Publie un post LinkedIn. Par défaut au nom du profil connecté ; avec author=organization, au nom de la page entreprise configurée (connecteur de type Community Management API requis). Peut inclure un lien (article) avec titre et description. Retourne l\'URN et l\'URL publique du post.',
@@ -188,15 +227,19 @@ function linkedin_tools(array $settings): array
                 'type'       => 'object',
                 'properties' => [
                     'text' => ['type' => 'string', 'description' => 'Texte du post (max ~3000 caractères).'],
-                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite un connecteur de type Community Management API avec la page renseignée).'],
+                    'author' => $authorArg,
                     'link_url' => ['type' => 'string', 'description' => 'URL à partager (facultatif).'],
                     'link_title' => ['type' => 'string', 'description' => 'Titre affiché pour le lien (facultatif).'],
                     'link_description' => ['type' => 'string', 'description' => 'Description affichée pour le lien (facultatif).'],
-                    'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC ; ignoré pour une page, toujours publique).'],
-                    'disable_reshare' => ['type' => 'boolean', 'description' => 'Interdire le repartage (défaut : false).'],
+                    'visibility' => $visibilityArg,
+                    'disable_reshare' => $reshareArg,
                 ],
                 'required' => ['text'],
             ],
+            'outputSchema' => $postOutput,
+            'available'    => true,
+            'requires'     => [],
+            'errors'       => $postErrors,
         ],
         [
             'name'        => 'linkedin_create_document_post',
@@ -209,12 +252,32 @@ function linkedin_tools(array $settings): array
                     'document_base64' => ['type' => 'string', 'description' => 'Contenu du fichier encodé en base64 — la façon de publier un fichier local (lisez-le puis encodez-le avant l\'appel). Au-delà de quelques Mo, préférez document_url.'],
                     'filename' => ['type' => 'string', 'description' => 'Nom du fichier avec son extension (ex. presentation.pdf). Requis avec document_base64 ; déduit de l\'URL sinon.'],
                     'title' => ['type' => 'string', 'description' => 'Titre affiché sous le carrousel (défaut : le nom du fichier).'],
-                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite un connecteur de type Community Management API avec la page renseignée).'],
-                    'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC ; ignoré pour une page, toujours publique).'],
-                    'disable_reshare' => ['type' => 'boolean', 'description' => 'Interdire le repartage (défaut : false).'],
+                    'author' => $authorArg,
+                    'visibility' => $visibilityArg,
+                    'disable_reshare' => $reshareArg,
                 ],
                 'required' => ['text'],
             ],
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => $postOutput['properties'] + [
+                    'document_urn' => ['type' => 'string', 'description' => 'URN du document déposé (urn:li:document:…).'],
+                    'document'     => ['type' => 'string', 'description' => 'Nom du fichier publié.'],
+                ],
+                'required' => $postOutput['required'],
+            ],
+            'available' => true,
+            'requires'  => [],
+            'errors'    => array_merge($postErrors, [
+                'Indiquez le document à publier : « document_url » ou « document_base64 » (aucune source fournie).',
+                'Argument « filename » requis avec « document_base64 ».',
+                'Format de document non supporté par LinkedIn (hors .pdf, .ppt, .pptx, .doc, .docx).',
+                'Document trop volumineux : la limite LinkedIn est de 100 Mo.',
+                '« document_url » pointe vers une adresse interne : seules les URL publiques sont acceptées.',
+                'LinkedIn a rejeté le document pendant son traitement (PROCESSING_FAILED).',
+                'Le document est toujours en cours de traitement après 25 s — le post n\'a pas été publié.',
+                'HTTP 403 DOCUMENT_FORBIDDEN — vous n\'êtes pas admin de la page visée.',
+            ]),
         ],
         [
             'name'        => 'linkedin_delete_post',
@@ -225,6 +288,20 @@ function linkedin_tools(array $settings): array
                     'post_urn' => ['type' => 'string', 'description' => 'URN du post à supprimer.'],
                 ],
                 'required' => ['post_urn'],
+            ],
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'deleted'  => ['type' => 'boolean', 'description' => 'Toujours true en cas de succès.'],
+                    'post_urn' => ['type' => 'string', 'description' => 'URN du post supprimé.'],
+                ],
+                'required' => ['deleted', 'post_urn'],
+            ],
+            'available' => true,
+            'requires'  => [],
+            'errors'    => [
+                'Argument « post_urn » invalide : URN attendu commençant par urn:li:share: ou urn:li:ugcPost:.',
+                'HTTP 404 — post introuvable, déjà supprimé, ou publié par un autre compte.',
             ],
         ],
         [
@@ -238,6 +315,20 @@ function linkedin_tools(array $settings): array
                 ],
                 'required' => ['post_urn', 'text'],
             ],
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'commented' => ['type' => 'boolean', 'description' => 'Toujours true en cas de succès.'],
+                    'post_urn'  => ['type' => 'string', 'description' => 'URN du post commenté.'],
+                ],
+                'required' => ['commented', 'post_urn'],
+            ],
+            'available' => true,
+            'requires'  => [],
+            'errors'    => [
+                'Le texte du commentaire est vide.',
+                'Argument « post_urn » invalide : URN attendu commençant par urn:li:share:, urn:li:ugcPost: ou urn:li:activity:.',
+            ],
         ],
         [
             'name'        => 'linkedin_react',
@@ -250,16 +341,41 @@ function linkedin_tools(array $settings): array
                 ],
                 'required' => ['post_urn'],
             ],
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'reacted'  => ['type' => 'boolean', 'description' => 'Toujours true en cas de succès.'],
+                    'reaction' => ['type' => 'string', 'enum' => ['LIKE', 'PRAISE', 'APPRECIATION', 'EMPATHY', 'INTEREST', 'ENTERTAINMENT'], 'description' => 'Réaction effectivement appliquée.'],
+                ],
+                'required' => ['reacted', 'reaction'],
+            ],
+            'available' => true,
+            'requires'  => [],
+            'errors'    => [
+                'Argument « post_urn » invalide : URN attendu commençant par urn:li:share:, urn:li:ugcPost: ou urn:li:activity:.',
+                'HTTP 422 — réaction déjà posée sur ce post.',
+            ],
         ],
         [
             'name'        => 'linkedin_get_profile',
             'description' => 'Retourne le profil LinkedIn connecté (nom, email, URN) — utile pour vérifier la connexion.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'urn'   => ['type' => 'string', 'description' => 'URN du membre connecté (urn:li:person:…).'],
+                    'name'  => ['type' => 'string', 'description' => 'Nom affiché du membre.'],
+                    'email' => ['type' => ['string', 'null'], 'description' => 'Email du membre — null sur un connecteur Community Management API, qui n\'expose pas OpenID.'],
+                ],
+                'required' => ['urn', 'name', 'email'],
+            ],
+            'available' => true,
+            'requires'  => [],
+            'errors'    => [
+                'Lecture du profil refusée : scope openid ou r_basicprofile non accordé selon le type d\'app.',
+            ],
         ],
-    ];
-
-    if (linkedin_app_type($settings) === 'community') {
-        $tools[] = [
+        [
             'name'        => 'linkedin_my_post_stats',
             'description' => 'Statistiques de VOS posts personnels : impressions, membres atteints, réactions, commentaires, repartages. Sans post_urn : cumul sur l\'ensemble de vos posts ; avec post_urn : détail d\'un post. Période optionnelle (sinon : depuis toujours).',
             'inputSchema' => [
@@ -275,11 +391,33 @@ function linkedin_tools(array $settings): array
                     'end_date'   => ['type' => 'string', 'description' => 'Fin de période AAAA-MM-JJ (exclue). Facultatif.'],
                 ],
             ],
-        ];
-    }
-
-    if (linkedin_app_type($settings) === 'community' && trim((string) ($settings['org_urn'] ?? '')) !== '') {
-        $tools[] = [
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'post_urn' => ['type' => ['string', 'null'], 'description' => 'URN interrogé, ou null pour un cumul sur tous vos posts.'],
+                    'stats'    => [
+                        'type'        => 'object',
+                        'description' => 'Une clé par métrique demandée, valeur entière.',
+                        'properties'  => [
+                            'IMPRESSION'      => ['type' => 'integer'],
+                            'MEMBERS_REACHED' => ['type' => 'integer'],
+                            'RESHARE'         => ['type' => 'integer'],
+                            'REACTION'        => ['type' => 'integer'],
+                            'COMMENT'         => ['type' => 'integer'],
+                        ],
+                    ],
+                ],
+                'required' => ['post_urn', 'stats'],
+            ],
+            'available' => $community,
+            'requires'  => $community ? [] : [$needCommunity],
+            'errors'    => [
+                'Les statistiques de posts personnels nécessitent un connecteur de type « Community Management API ».',
+                'Argument « post_urn » invalide : URN attendu commençant par urn:li:share: ou urn:li:ugcPost:.',
+                'HTTP 426 — LINKEDIN_API_VERSION trop ancienne (cet endpoint exige une version ≥ 202506).',
+            ],
+        ],
+        [
             'name'        => 'linkedin_org_share_stats',
             'description' => 'Statistiques de la page organisation LinkedIn : impressions, clics, réactions, commentaires, partages, taux d\'engagement. Sans argument : cumul sur l\'ensemble des posts ; avec post_urns : détail par post. Nécessite la Community Management API (gratuite sur demande).',
             'inputSchema' => [
@@ -292,14 +430,79 @@ function linkedin_tools(array $settings): array
                     ],
                 ],
             ],
-        ];
-        $tools[] = [
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'elements' => [
+                        'type'        => 'array',
+                        'description' => 'Un élément par post demandé, ou un unique élément de cumul. Vide si LinkedIn n\'a encore aucune statistique.',
+                        'items'       => [
+                            'type'       => 'object',
+                            'properties' => [
+                                'share'                => ['type' => 'string', 'description' => 'URN du post concerné (absent sur la ligne de cumul).'],
+                                'ugcPost'              => ['type' => 'string', 'description' => 'URN du post concerné, variante ugcPost.'],
+                                'totalShareStatistics' => [
+                                    'type'       => 'object',
+                                    'properties' => [
+                                        'impressionCount' => ['type' => 'integer'],
+                                        'clickCount'      => ['type' => 'integer'],
+                                        'likeCount'       => ['type' => 'integer'],
+                                        'commentCount'    => ['type' => 'integer'],
+                                        'shareCount'      => ['type' => 'integer'],
+                                        'engagement'      => ['type' => 'number', 'description' => 'Taux d\'engagement, en fraction (0.0342 = 3,42 %).'],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+                'required' => ['elements'],
+            ],
+            'available' => $withOrg,
+            'requires'  => $withOrg ? [] : array_values(array_filter([$community ? null : $needCommunity, $needOrg])),
+            'errors'    => [
+                'Renseignez l\'identifiant de votre page organisation dans les réglages du connecteur.',
+                'HTTP 403 — vous n\'êtes pas administrateur de la page, ou le produit Community Management API n\'est pas actif.',
+            ],
+        ],
+        [
             'name'        => 'linkedin_org_follower_count',
             'description' => 'Nombre d\'abonnés de la page organisation LinkedIn configurée.',
             'inputSchema' => ['type' => 'object', 'properties' => new stdClass()],
-        ];
-    }
+            'outputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'followers' => ['type' => 'integer', 'description' => 'Nombre d\'abonnés de la page.'],
+                ],
+                'required' => ['followers'],
+            ],
+            'available' => $withOrg,
+            'requires'  => $withOrg ? [] : array_values(array_filter([$community ? null : $needCommunity, $needOrg])),
+            'errors'    => [
+                'Renseignez l\'identifiant de votre page organisation dans les réglages du connecteur.',
+                'HTTP 403 — vous n\'êtes pas administrateur de la page.',
+            ],
+        ],
+    ];
 
+    return $catalog;
+}
+
+/**
+ * Liste des outils MCP exposés par ce connecteur : le catalogue filtré sur la
+ * disponibilité, réduit aux seuls champs prévus par la spécification MCP.
+ */
+function linkedin_tools(array $settings): array
+{
+    $tools = [];
+    foreach (linkedin_tool_catalog($settings) as $tool) {
+        if ($tool['available']) {
+            $tools[] = array_intersect_key(
+                $tool,
+                array_flip(['name', 'description', 'inputSchema', 'outputSchema'])
+            );
+        }
+    }
     return $tools;
 }
 
@@ -659,7 +862,7 @@ function li_tool_org_follower_count(array $settings): array
     if ($status !== 200) {
         throw li_api_error('Nombre d\'abonnés indisponible', $status, $data);
     }
-    $count = $data['firstDegreeSize'] ?? 0;
+    $count = (int) ($data['firstDegreeSize'] ?? 0);
     return mcp_tool_result("La page $orgUrn compte $count abonnés.", ['followers' => $count]);
 }
 

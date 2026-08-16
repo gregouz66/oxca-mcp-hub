@@ -31,10 +31,11 @@ aucun coût.
 5. [Brancher Claude Code](#brancher-claude-code)
 6. [Partage et révocation](#partage-et-révocation)
 7. [Outils LinkedIn disponibles](#outils-linkedin-disponibles)
-8. [Sécurité](#sécurité)
-9. [Structure du projet](#structure-du-projet)
-10. [Ajouter un type de MCP](#ajouter-un-type-de-mcp)
-11. [Dépannage](#dépannage)
+8. [Documentation des outils d'un connecteur](#documentation-des-outils-dun-connecteur)
+9. [Sécurité](#sécurité)
+10. [Structure du projet](#structure-du-projet)
+11. [Ajouter un type de MCP](#ajouter-un-type-de-mcp)
+12. [Dépannage](#dépannage)
 
 ---
 
@@ -251,6 +252,40 @@ fichier de votre machine : le document se transmet de deux façons.
   est refusée : le connecteur ne sert pas de relais vers le réseau de
   l'hébergement.
 
+## Documentation des outils d'un connecteur
+
+Chaque connecteur expose sa propre référence, à jour par construction puisqu'elle
+est lue directement dans le code des outils : bouton **« Outils exposés »** sur la
+page du connecteur, ou `tools.php` en direct.
+
+Elle liste **tout le catalogue du type de MCP**, pas seulement ce qui est actif :
+un outil non exposé apparaît avec la mention *Non exposé* et **ce qu'il faut faire
+pour l'activer** (passer le connecteur en Community Management API, renseigner la
+page organisation…). Pour chaque outil : les arguments avec leur type, leur
+caractère requis ou facultatif et leurs valeurs autorisées ; les données
+renvoyées dans `structuredContent` ; et les erreurs possibles.
+
+| Accès | URL |
+|---|---|
+| Depuis votre espace | `/tools.php?id=<id du connecteur>` |
+| Avec un token d'endpoint | `/tools.php?t=oxm_…` |
+| En JSON | ajoutez `&format=json`, ou envoyez `Accept: application/json` |
+
+```bash
+curl -s -H "Authorization: Bearer oxm_…" "https://votre-site/tools.php?format=json"
+```
+
+Le JSON contient le connecteur et son état, les coordonnées de l'endpoint MCP
+(versions de protocole et méthodes acceptées), le catalogue complet des outils
+(`input_schema`, `output_schema`, `available`, `requires`, `errors`) et les
+erreurs communes. Les trois formes de token de `mcp.php` sont acceptées
+(`?t=`, `/tools.php/oxm_…`, en-tête `Authorization`). Aucun secret n'y figure :
+ni Client ID/Secret, ni token LinkedIn.
+
+> Les mêmes schémas alimentent `tools/list` sur l'endpoint MCP : les outils y
+> déclarent désormais un `outputSchema`, ce qui permet à Claude d'exploiter les
+> données structurées sans les redeviner depuis le texte.
+
 ## Sécurité
 
 - **Sans mot de passe** : codes à 6 chiffres et liens magiques **hachés
@@ -274,6 +309,7 @@ fichier de votre machine : le document se transmet de deux façons.
 ├── login.php               Connexion par code / lien magique
 ├── dashboard.php           Tableau de bord (connecteurs, catalogue, partages)
 ├── connector.php           Gestion d'un connecteur (réglages, partage, endpoint)
+├── tools.php               Documentation des outils d'un connecteur (HTML + JSON)
 ├── oauth-linkedin.php      Flux OAuth LinkedIn
 ├── mcp.php                 Endpoint MCP public (Streamable HTTP, JSON-RPC 2.0)
 ├── mentions-legales.php    Mentions légales (⚠️ adaptez l'identité si vous forkez)
@@ -312,6 +348,16 @@ Le hub est conçu pour accueillir d'autres connecteurs pré-codés :
 2. Chargez le fichier dans `app/bootstrap.php` (à côté de `linkedin.php`).
 3. Déclarez le type dans `mcp_types()` (`app/models.php`) : libellé, phrase du
    catalogue, icône (`ui_icon`), noms des trois fonctions.
+   - Facultatif mais recommandé : une quatrième fonction
+     `montype_tool_catalog(array $settings): array`, déclarée en `catalog_fn`.
+     Elle renvoie **tous** les outils du type — y compris ceux que la
+     configuration courante n'expose pas — chacun avec, en plus des champs MCP
+     (`inputSchema`, `outputSchema`) : `available` (booléen), `requires`
+     (conditions d'activation, lisibles telles quelles) et `errors` (erreurs
+     métier). `montype_tools()` se réduit alors à filtrer ce catalogue sur
+     `available`, et `tools.php` documente le type sans une ligne de code
+     supplémentaire. Sans `catalog_fn`, seuls les outils actifs sont
+     documentés, sans conditions ni erreurs.
 4. Si certains réglages sont sensibles, listez-les dans
    `config_sensitive_keys()` : ils seront chiffrés automatiquement.
 

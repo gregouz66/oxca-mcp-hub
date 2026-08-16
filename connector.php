@@ -268,7 +268,9 @@ ui_copy_row('URL avec token intégré', $endpoint,
     'Pratique quand le client n\'accepte qu\'une URL (claude.ai → Paramètres → Connecteurs → « Ajouter un connecteur personnalisé »). À éviter si possible : le token figure alors dans les journaux d\'accès du serveur.');
 echo '</details>';
 
-echo '<div style="margin-top:16px">';
+echo '<div class="row-actions" style="margin-top:16px">'
+    . '<a class="btn btn-ghost btn-sm" href="' . e(base_url('/tools.php?id=' . $config['id'])) . '">'
+    . ui_icon('terminal') . 'Outils exposés</a>';
 ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'regenerate'],
     'Régénérer mon token', 'btn btn-ghost btn-sm',
     'Régénérer ? L\'URL actuelle cessera immédiatement de fonctionner.', 'key');
