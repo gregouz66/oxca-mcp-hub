@@ -25,6 +25,7 @@ function mcp_types(): array
             'tagline'     => 'Publiez des posts, commentez, réagissez et suivez vos statistiques LinkedIn depuis Claude.',
             'icon'        => 'linkedin',
             'tools_fn'    => 'linkedin_tools',
+            'catalog_fn'  => 'linkedin_tool_catalog',
             'call_fn'     => 'linkedin_call',
             'summary_fn'  => 'linkedin_summary',
         ],
