@@ -182,10 +182,7 @@ function tools_render_schema(array $schema, string $emptyLabel): void
     echo '</div>';
 }
 
-$isOwner  = $grant['role'] === 'owner';
-$endpoint = grant_endpoint_url($grant);
-$jsonUrl  = base_url('/tools.php?t=' . grant_token($grant) . '&format=json');
-$exposed  = array_filter($catalog, fn ($t) => $t['available']);
+$exposed = array_filter($catalog, fn ($t) => $t['available']);
 
 ui_top('Outils — ' . $config['name'], $user, true);
 ui_page_header(
@@ -198,14 +195,25 @@ ui_page_header(
 );
 
 /* ---- Accès programmatique -------------------------------------------- */
+// Cette page a vocation à être partagée (à un développeur, à un agent, en PDF) :
+// par défaut elle ne montre donc AUCUN token, seulement des exemples en
+// « oxm_… ». Le vrai token reste accessible, mais derrière un dépliant, pour
+// qu'un partage ou une capture d'écran ne l'emporte pas par inadvertance.
 ui_card_open('Cette page en JSON', 'Même contenu, exploitable par un script ou un agent.', 1);
-ui_copy_row('URL JSON', $jsonUrl,
-    'Le token vaut authentification : ne le publiez pas. L\'en-tête <code>Authorization: Bearer …</code> est accepté à la place du paramètre <code>t</code>.');
-ui_code_block('En ligne de commande', 'curl -s -H "Authorization: Bearer ' . grant_token($grant) . '" \\'
-    . "\n  " . base_url('/tools.php') . '?format=json');
-ui_code_block('Lister les outils via le protocole MCP', 'curl -s -X POST "' . $endpoint . '" \\'
+ui_code_block('En ligne de commande', 'curl -s -H "Authorization: Bearer oxm_VOTRE_TOKEN" \\'
+    . "\n  \"" . base_url('/tools.php') . '?format=json"');
+ui_code_block('Lister les outils via le protocole MCP', 'curl -s -X POST "' . base_url('/mcp.php') . '" \\'
+    . "\n  -H \"Authorization: Bearer oxm_VOTRE_TOKEN\" \\"
     . "\n  -H \"Content-Type: application/json\" \\"
     . "\n  -d '" . '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' . "'");
+echo '<p class="hint">' . ui_icon('shield')
+    . ' Cette page ne contient aucun secret : vous pouvez la partager ou l\'exporter telle quelle.'
+    . ' Le JSON non plus — il ne renvoie que des métadonnées d\'outils.</p>';
+echo '<details class="disclosure"><summary>Afficher mon token d\'accès</summary>';
+ui_copy_row('Token d\'accès', grant_token($grant),
+    'À coller dans l\'en-tête <code>Authorization</code> à la place de <code>oxm_VOTRE_TOKEN</code>.'
+    . ' Il vaut authentification : ne le partagez pas, et régénérez-le depuis la page du connecteur au moindre doute.');
+echo '</details>';
 ui_card_close();
 
 /* ---- Les outils ------------------------------------------------------- */
