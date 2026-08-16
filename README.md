@@ -8,9 +8,9 @@ aucun coût.
   par email.
 - 🧩 **MCP pré-codés** : les outils sont déjà écrits ; l'utilisateur ne
   renseigne que le strict nécessaire pour les rendre fonctionnels.
-- 💼 **LinkedIn inclus** : publier des posts, commenter, réagir, supprimer,
-  consulter les statistiques d'une page organisation — uniquement via les
-  produits **gratuits** de l'API LinkedIn.
+- 💼 **LinkedIn inclus** : publier des posts (texte, lien, **carrousel PDF**),
+  commenter, réagir, supprimer, consulter les statistiques d'une page
+  organisation — uniquement via les produits **gratuits** de l'API LinkedIn.
 - 🤝 **Partage maîtrisé** : partagez un connecteur par simple adresse email ;
   chaque invité reçoit sa **propre URL révocable**, sans jamais voir vos
   secrets. Révoquez un accès ou supprimez le connecteur à tout moment.
@@ -217,6 +217,7 @@ suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.
 | Outil MCP | Description | Type d'app requis |
 |---|---|---|
 | `linkedin_create_post` | Publie un post (texte, lien avec titre/description, visibilité, blocage du repartage). `author: member` (défaut, profil connecté) ou `author: organization` (au nom de la page entreprise configurée) | Les deux ; `author: organization` → Community Management |
+| `linkedin_create_document_post` | Publie un post avec un **document en pièce jointe** (PDF, PPT, PPTX, DOC, DOCX), affiché en **carrousel swipable**. Mêmes options d'auteur et de visibilité que `linkedin_create_post` | Les deux ; `author: organization` → Community Management |
 | `linkedin_delete_post` | Supprime un post | Les deux |
 | `linkedin_comment` | Commente un post | Les deux |
 | `linkedin_react` | Réagit à un post (like, bravo, soutien…) | Les deux |
@@ -224,6 +225,31 @@ suffixe de chemin (`/mcp.php/oxm_…`) selon vos préférences d'intégration.
 | `linkedin_my_post_stats` | Statistiques de **vos posts personnels** : impressions, membres atteints, réactions, commentaires, repartages — cumul ou par post, période optionnelle | Community Management |
 | `linkedin_org_share_stats` | Statistiques de la page : impressions, clics, réactions, commentaires, partages, engagement — cumul ou par post | Community Management + page renseignée |
 | `linkedin_org_follower_count` | Nombre d'abonnés de la page | Community Management + page renseignée |
+
+### Publier un carrousel (`linkedin_create_document_post`)
+
+LinkedIn appelle « document post » ce que le fil affiche comme un carrousel
+swipable. Le hub enchaîne pour vous les trois appels de l'[API Documents](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/documents-api)
+(réservation de l'upload → envoi du binaire → publication), en attendant que
+LinkedIn ait fini de traiter le fichier avant de publier.
+
+Le connecteur étant **hébergé à distance**, il ne peut pas lire un chemin de
+fichier de votre machine : le document se transmet de deux façons.
+
+| Paramètre | Quand l'utiliser |
+|---|---|
+| `document_url` | Le fichier est déjà en ligne (URL publique `http(s)`). Le hub le télécharge. **À privilégier** au-delà de quelques Mo. |
+| `document_base64` + `filename` | Le fichier est local : Claude le lit et l'encode en base64. Pratique, mais la requête grossit d'environ 33 % — attention aux limites `post_max_size` / `memory_limit` de votre hébergement. |
+
+- Formats acceptés : **PDF** (recommandé), PPT, PPTX, DOC, DOCX.
+  Limites LinkedIn : **100 Mo** et **300 pages**.
+- `title` fixe le libellé affiché sous le carrousel (défaut : le nom du fichier).
+- Aucune autorisation supplémentaire : `w_member_social` couvre les documents
+  d'un profil, `w_organization_social` ceux d'une page — les scopes déjà
+  demandés par `linkedin_create_post`.
+- Une URL interne ou privée (`localhost`, `10.0.0.0/8`, `169.254.169.254`…)
+  est refusée : le connecteur ne sert pas de relais vers le réseau de
+  l'hébergement.
 
 ## Sécurité
 

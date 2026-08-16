@@ -199,6 +199,24 @@ function linkedin_tools(array $settings): array
             ],
         ],
         [
+            'name'        => 'linkedin_create_document_post',
+            'description' => 'Publie un post LinkedIn avec un document en pièce jointe (PDF, PPTX ou DOCX), affiché comme un carrousel swipable dans le fil. Par défaut au nom du profil connecté ; avec author=organization, au nom de la page entreprise configurée. Le fichier est fourni soit par son URL publique (document_url), soit encodé en base64 (document_base64) : ce serveur est hébergé à distance et ne peut pas lire un chemin de votre machine.',
+            'inputSchema' => [
+                'type'       => 'object',
+                'properties' => [
+                    'text' => ['type' => 'string', 'description' => 'Texte du post (max ~3000 caractères).'],
+                    'document_url' => ['type' => 'string', 'description' => 'URL publique http(s) du fichier à publier (.pdf, .ppt, .pptx, .doc, .docx). Alternative à document_base64.'],
+                    'document_base64' => ['type' => 'string', 'description' => 'Contenu du fichier encodé en base64 — la façon de publier un fichier local (lisez-le puis encodez-le avant l\'appel). Au-delà de quelques Mo, préférez document_url.'],
+                    'filename' => ['type' => 'string', 'description' => 'Nom du fichier avec son extension (ex. presentation.pdf). Requis avec document_base64 ; déduit de l\'URL sinon.'],
+                    'title' => ['type' => 'string', 'description' => 'Titre affiché sous le carrousel (défaut : le nom du fichier).'],
+                    'author' => ['type' => 'string', 'enum' => ['member', 'organization'], 'description' => 'Qui signe le post : member = le profil connecté (défaut) ; organization = la page entreprise du connecteur (nécessite un connecteur de type Community Management API avec la page renseignée).'],
+                    'visibility' => ['type' => 'string', 'enum' => ['PUBLIC', 'CONNECTIONS'], 'description' => 'Visibilité du post (défaut : PUBLIC ; ignoré pour une page, toujours publique).'],
+                    'disable_reshare' => ['type' => 'boolean', 'description' => 'Interdire le repartage (défaut : false).'],
+                ],
+                'required' => ['text'],
+            ],
+        ],
+        [
             'name'        => 'linkedin_delete_post',
             'description' => 'Supprime un post publié via ce connecteur (URN urn:li:share:… ou urn:li:ugcPost:…).',
             'inputSchema' => [
@@ -293,14 +311,15 @@ function linkedin_call(array $config, string $name, array $args): array
     $settings = config_settings($config);
 
     return match ($name) {
-        'linkedin_create_post'        => li_tool_create_post($settings, $args),
-        'linkedin_delete_post'        => li_tool_delete_post($settings, $args),
-        'linkedin_comment'            => li_tool_comment($settings, $args),
-        'linkedin_react'              => li_tool_react($settings, $args),
-        'linkedin_get_profile'        => li_tool_profile($settings),
-        'linkedin_my_post_stats'      => li_tool_my_post_stats($settings, $args),
-        'linkedin_org_share_stats'    => li_tool_org_share_stats($settings, $args),
-        'linkedin_org_follower_count' => li_tool_org_follower_count($settings),
+        'linkedin_create_post'          => li_tool_create_post($settings, $args),
+        'linkedin_create_document_post' => li_tool_create_document_post($settings, $args),
+        'linkedin_delete_post'          => li_tool_delete_post($settings, $args),
+        'linkedin_comment'              => li_tool_comment($settings, $args),
+        'linkedin_react'                => li_tool_react($settings, $args),
+        'linkedin_get_profile'          => li_tool_profile($settings),
+        'linkedin_my_post_stats'        => li_tool_my_post_stats($settings, $args),
+        'linkedin_org_share_stats'      => li_tool_org_share_stats($settings, $args),
+        'linkedin_org_follower_count'   => li_tool_org_follower_count($settings),
         default => throw new McpError(-32602, 'Unknown tool: ' . $name),
     };
 }
@@ -313,20 +332,7 @@ function li_tool_create_post(array $settings, array $args): array
     if ($text === '') {
         throw new McpToolError('Le texte du post est vide.');
     }
-    $visibility = in_array($args['visibility'] ?? '', ['PUBLIC', 'CONNECTIONS'], true)
-        ? $args['visibility'] : 'PUBLIC';
-
-    // Auteur du post : le membre connecté (défaut) ou la page organisation.
-    $asOrg  = ($args['author'] ?? 'member') === 'organization';
-    $author = $settings['member_urn'];
-    if ($asOrg) {
-        $author = li_require_org($settings);
-        $granted = (string) ($settings['granted_scopes'] ?? '');
-        if ($granted !== '' && !str_contains($granted, 'w_organization_social')) {
-            throw new McpToolError('Le token LinkedIn actuel n\'a pas le scope w_organization_social : le propriétaire doit cliquer « Reconnecter » sur la page du connecteur (mode organisation activé) pour accorder les autorisations de page. Le produit « Community Management API » doit être actif sur l\'app LinkedIn.');
-        }
-        $visibility = 'PUBLIC'; // un post de page est toujours public
-    }
+    [$author, $asOrg, $visibility] = li_post_author($settings, $args);
 
     $payload = [
         'author'       => $author,
@@ -369,6 +375,66 @@ function li_tool_create_post(array $settings, array $args): array
         'Post publié avec succès au nom de ' . ($asOrg ? "la page $author" : 'votre profil')
             . ".\nURN : $urn" . ($url !== '' ? "\nURL : $url" : ''),
         ['post_urn' => $urn, 'post_url' => $url, 'author' => $author, 'visibility' => $visibility]
+    );
+}
+
+/**
+ * Post « document » (carrousel LinkedIn) : le fichier est d'abord déposé via
+ * l'API Documents, puis référencé dans le post. Trois appels enchaînés —
+ * initializeUpload, envoi du binaire, publication — plus une attente de
+ * traitement, l'API Documents n'ayant pas d'upload synchrone.
+ */
+function li_tool_create_document_post(array $settings, array $args): array
+{
+    li_require_connection($settings);
+
+    $text = trim((string) ($args['text'] ?? ''));
+    if ($text === '') {
+        throw new McpToolError('Le texte du post est vide.');
+    }
+    [$author, $asOrg, $visibility] = li_post_author($settings, $args);
+
+    $document = li_document_bytes($args);
+    $title    = mb_str_limit(trim((string) ($args['title'] ?? '')) ?: $document['filename'], 400);
+
+    // Le document est déposé au nom de l'auteur du post : LinkedIn refuse
+    // (DOCUMENT_FORBIDDEN) un document dont le propriétaire diffère de l'auteur.
+    [$uploadUrl, $documentUrn] = li_document_initialize_upload($settings, $author);
+    li_document_upload($settings, $uploadUrl, $document['bytes']);
+    li_document_await($settings, $documentUrn);
+
+    [$status, $headers, $data] = li_rest($settings, 'POST', '/rest/posts', [
+        'author'       => $author,
+        'commentary'   => linkedin_escape_text($text),
+        'visibility'   => $visibility,
+        'distribution' => [
+            'feedDistribution'               => 'MAIN_FEED',
+            'targetEntities'                 => [],
+            'thirdPartyDistributionChannels' => [],
+        ],
+        'content'                   => ['media' => ['title' => $title, 'id' => $documentUrn]],
+        'lifecycleState'            => 'PUBLISHED',
+        'isReshareDisabledByAuthor' => (bool) ($args['disable_reshare'] ?? false),
+    ]);
+    if ($status !== 201) {
+        throw li_api_error('Publication du document refusée', $status, $data);
+    }
+
+    $urn = $headers['x-restli-id'] ?? $headers['x-linkedin-id'] ?? '';
+    $url = $urn !== '' ? 'https://www.linkedin.com/feed/update/' . rawurlencode($urn) . '/' : '';
+
+    return mcp_tool_result(
+        'Post avec document publié au nom de ' . ($asOrg ? "la page $author" : 'votre profil')
+            . ' — « ' . $document['filename'] . ' » s\'affiche en carrousel dans le fil.'
+            . "\nURN : $urn" . ($url !== '' ? "\nURL : $url" : ''),
+        [
+            'post_urn'     => $urn,
+            'post_url'     => $url,
+            'author'       => $author,
+            'visibility'   => $visibility,
+            'document_urn' => $documentUrn,
+            'document'     => $document['filename'],
+        ]
     );
 }
 
@@ -623,6 +689,28 @@ function li_require_org(array $settings): string
     return $orgUrn;
 }
 
+/**
+ * Résout l'auteur d'un post depuis l'argument « author » : le membre connecté
+ * (défaut) ou la page organisation du connecteur.
+ * Retourne [URN de l'auteur, est-ce une page, visibilité effective].
+ */
+function li_post_author(array $settings, array $args): array
+{
+    $visibility = in_array($args['visibility'] ?? '', ['PUBLIC', 'CONNECTIONS'], true)
+        ? (string) $args['visibility'] : 'PUBLIC';
+
+    if (($args['author'] ?? 'member') !== 'organization') {
+        return [(string) $settings['member_urn'], false, $visibility];
+    }
+
+    $orgUrn  = li_require_org($settings);
+    $granted = (string) ($settings['granted_scopes'] ?? '');
+    if ($granted !== '' && !str_contains($granted, 'w_organization_social')) {
+        throw new McpToolError('Le token LinkedIn actuel n\'a pas le scope w_organization_social : le propriétaire doit cliquer « Reconnecter » sur la page du connecteur (mode organisation activé) pour accorder les autorisations de page. Le produit « Community Management API » doit être actif sur l\'app LinkedIn.');
+    }
+    return [$orgUrn, true, 'PUBLIC']; // un post de page est toujours public
+}
+
 /** Extrait et valide un argument URN. */
 function li_arg_urn(array $args, string $key, array $prefixes): string
 {
@@ -644,6 +732,275 @@ function linkedin_escape_text(string $text): string
     return preg_replace('/([\\\\|{}@\[\]()<>#*~_])/', '\\\\$1', $text) ?? $text;
 }
 
+/* ------------------------------------------------- API Documents LinkedIn */
+
+/** Taille maximale d'un document acceptée par LinkedIn (100 Mo, 300 pages). */
+const LINKEDIN_DOC_MAX_BYTES = 104857600;
+
+/** Extensions acceptées par l'API Documents (le PDF est le format conseillé). */
+const LINKEDIN_DOC_EXTENSIONS = ['pdf', 'ppt', 'pptx', 'doc', 'docx'];
+
+/** Délai maximal d'un transfert de document (téléchargement ou envoi), en secondes. */
+const LINKEDIN_DOC_TRANSFER_TIMEOUT = 120;
+
+/** Budget d'attente du traitement du document chez LinkedIn, en secondes. */
+const LINKEDIN_DOC_POLL_TIMEOUT = 25;
+
+/**
+ * Récupère le document à publier depuis les arguments de l'outil : URL
+ * publique (document_url) ou contenu encodé (document_base64).
+ * Retourne ['bytes' => octets bruts, 'filename' => nom avec extension].
+ */
+function li_document_bytes(array $args): array
+{
+    $url    = trim((string) ($args['document_url'] ?? ''));
+    $base64 = trim((string) ($args['document_base64'] ?? ''));
+    $name   = trim((string) ($args['filename'] ?? ''));
+
+    if ($url !== '' && $base64 !== '') {
+        throw new McpToolError('Fournissez « document_url » OU « document_base64 », pas les deux.');
+    }
+
+    if ($base64 !== '') {
+        if ($name === '') {
+            throw new McpToolError('Argument « filename » requis avec « document_base64 » : LinkedIn a besoin de l\'extension du fichier (.pdf, .pptx, .docx…).');
+        }
+        // strict = true : un contenu tronqué ou mal encodé doit échouer ici
+        // plutôt que de produire un fichier corrompu envoyé à LinkedIn.
+        $bytes = base64_decode(preg_replace('/\s+/', '', $base64) ?? $base64, true);
+        if ($bytes === false || $bytes === '') {
+            throw new McpToolError('« document_base64 » n\'est pas un contenu base64 valide.');
+        }
+        li_document_check_size(strlen($bytes));
+        return ['bytes' => $bytes, 'filename' => li_document_filename($name)];
+    }
+
+    if ($url === '') {
+        throw new McpToolError('Indiquez le document à publier : « document_url » (URL publique http(s)) ou « document_base64 » (contenu encodé en base64). Ce connecteur est hébergé à distance : il ne peut pas ouvrir un chemin de fichier de votre machine.');
+    }
+
+    $filename = li_document_filename($name !== '' ? $name : basename((string) parse_url($url, PHP_URL_PATH)));
+    return ['bytes' => li_document_download($url), 'filename' => $filename];
+}
+
+/** Valide le nom et l'extension d'un document. Retourne un nom de fichier propre. */
+function li_document_filename(string $name): string
+{
+    $name = trim(str_replace(["\r", "\n"], '', basename($name)));
+    $ext  = strtolower((string) pathinfo($name, PATHINFO_EXTENSION));
+    if (!in_array($ext, LINKEDIN_DOC_EXTENSIONS, true)) {
+        throw new McpToolError('Format de document non supporté par LinkedIn'
+            . ($ext !== '' ? " (.$ext)" : '') . '. Formats acceptés : '
+            . implode(', ', array_map(fn ($e) => '.' . $e, LINKEDIN_DOC_EXTENSIONS))
+            . ' — précisez le nom du fichier avec son extension dans « filename ».');
+    }
+    return mb_str_limit($name, 200);
+}
+
+/** Refuse un document dépassant la limite LinkedIn. */
+function li_document_check_size(int $bytes): void
+{
+    if ($bytes > LINKEDIN_DOC_MAX_BYTES) {
+        throw new McpToolError('Document trop volumineux : ' . round($bytes / 1048576, 1)
+            . ' Mo pour un maximum de 100 Mo côté LinkedIn.');
+    }
+}
+
+/**
+ * Télécharge un document depuis une URL publique.
+ * Le connecteur ne doit pas servir de relais vers le réseau interne de
+ * l'hébergement (SSRF) : le schéma et l'adresse résolue sont contrôlés avant
+ * l'appel, et à chaque saut de redirection quand cURL le permet.
+ */
+function li_document_download(string $url): string
+{
+    li_guard_public_url($url);
+
+    $abort = '';
+    $ch    = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER  => true,
+        CURLOPT_TIMEOUT         => LINKEDIN_DOC_TRANSFER_TIMEOUT,
+        CURLOPT_FOLLOWLOCATION  => true,
+        CURLOPT_MAXREDIRS       => 3,
+        CURLOPT_PROTOCOLS       => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        CURLOPT_USERAGENT       => APP_NAME . '/' . APP_VERSION,
+        // Coupe le transfert dès le dépassement de la limite, sans attendre
+        // la fin du téléchargement (un retour non nul abandonne).
+        CURLOPT_NOPROGRESS       => false,
+        CURLOPT_PROGRESSFUNCTION => static function ($ch, $expected, $received) use (&$abort): int {
+            if ($expected > LINKEDIN_DOC_MAX_BYTES || $received > LINKEDIN_DOC_MAX_BYTES) {
+                $abort = 'size';
+                return 1;
+            }
+            return 0;
+        },
+    ]);
+    // Rejoue le contrôle anti-SSRF sur l'adresse réellement jointe, à chaque
+    // saut (PHP 8.2+ / libcurl 7.80+ ; ailleurs, seule l'URL initiale est vue).
+    // Inapplicable derrière un proxy sortant : l'adresse vue serait celle du
+    // proxy — c'est alors le contrôle sur l'URL initiale qui protège.
+    if (defined('CURLOPT_PREREQFUNCTION') && !li_proxy_configured()) {
+        curl_setopt($ch, CURLOPT_PREREQFUNCTION, static function ($ch, $destIp) use (&$abort): int {
+            try {
+                li_guard_public_ip((string) $destIp);
+                return CURL_PREREQFUNC_OK;
+            } catch (McpToolError) {
+                $abort = 'ip';
+                return CURL_PREREQFUNC_ABORT;
+            }
+        });
+    }
+
+    $body = curl_exec($ch);
+    if ($body === false) {
+        $err = curl_error($ch);
+        curl_close($ch);
+        throw new McpToolError(match ($abort) {
+            'size'  => 'Document trop volumineux : la limite LinkedIn est de 100 Mo.',
+            'ip'    => 'Le téléchargement a été redirigé vers une adresse interne : seules les URL publiques sont acceptées.',
+            default => 'Téléchargement du document impossible : ' . $err,
+        });
+    }
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    if ($status !== 200) {
+        throw new McpToolError("Le document n'a pas pu être téléchargé (HTTP $status) : $url");
+    }
+    if ($body === '') {
+        throw new McpToolError('Le fichier téléchargé est vide : ' . $url);
+    }
+    li_document_check_size(strlen($body));
+    return $body;
+}
+
+/** Indique si cURL passera par un proxy sortant (variables d'environnement). */
+function li_proxy_configured(): bool
+{
+    foreach (['http_proxy', 'https_proxy', 'all_proxy'] as $name) {
+        if (trim((string) (getenv($name) ?: getenv(strtoupper($name)) ?: '')) !== '') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Refuse une URL qui ne serait pas un http(s) vers une adresse publique. */
+function li_guard_public_url(string $url): void
+{
+    $parts  = parse_url($url) ?: [];
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    $host   = (string) ($parts['host'] ?? '');
+    if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+        throw new McpToolError('« document_url » doit être une URL http(s) complète (ex. https://exemple.com/deck.pdf).');
+    }
+    foreach (li_resolve_host($host) as $ip) {
+        li_guard_public_ip($ip);
+    }
+}
+
+/** Adresses IP d'un hôte (qui peut déjà être une IP littérale). */
+function li_resolve_host(string $host): array
+{
+    $host = trim($host, '[]'); // IPv6 littéral : [2001:db8::1]
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return [$host];
+    }
+    $ips = array_merge(
+        gethostbynamel($host) ?: [],
+        array_column(@dns_get_record($host, DNS_AAAA) ?: [], 'ipv6')
+    );
+    if ($ips === []) {
+        throw new McpToolError('Hôte introuvable pour « document_url » : ' . $host);
+    }
+    return $ips;
+}
+
+/** Refuse une adresse privée, de bouclage ou réservée. */
+function li_guard_public_ip(string $ip): void
+{
+    if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        throw new McpToolError('« document_url » pointe vers une adresse interne (' . $ip
+            . ') : seules les URL publiques sont acceptées.');
+    }
+}
+
+/**
+ * Étape 1 — réserve un emplacement d'upload auprès de LinkedIn.
+ * Retourne [URL d'upload à usage unique, URN du document].
+ */
+function li_document_initialize_upload(array $settings, string $owner): array
+{
+    [$status, , $data] = li_rest($settings, 'POST', '/rest/documents?action=initializeUpload', [
+        'initializeUploadRequest' => ['owner' => $owner],
+    ]);
+    if ($status !== 200) {
+        throw li_api_error('Préparation de l\'envoi du document refusée', $status, $data);
+    }
+    $uploadUrl = (string) ($data['value']['uploadUrl'] ?? '');
+    $documentUrn = (string) ($data['value']['document'] ?? '');
+    if ($uploadUrl === '' || $documentUrn === '') {
+        throw new McpToolError('Réponse inattendue de LinkedIn à l\'initialisation de l\'envoi : ni URL d\'upload ni URN de document.');
+    }
+    return [$uploadUrl, $documentUrn];
+}
+
+/** Étape 2 — envoie les octets du document sur l'URL d'upload (PUT brut). */
+function li_document_upload(array $settings, string $uploadUrl, string $bytes): void
+{
+    // Corps = octets bruts, comme `curl --upload-file` : ni JSON ni multipart,
+    // et pas d'en-tête de version ici (le service d'upload n'est pas /rest).
+    // « Expect: » neutralise le 100-continue ajouté par cURL au-delà de 1 Ko,
+    // que ce service n'honore pas toujours.
+    [$status, , $data] = li_http('PUT', $uploadUrl, [
+        'Authorization: Bearer ' . $settings['access_token'],
+        'Content-Type: application/octet-stream',
+        'Expect:',
+    ], $bytes, LINKEDIN_DOC_TRANSFER_TIMEOUT);
+
+    if (!in_array($status, [200, 201], true)) {
+        throw li_api_error('Envoi du document refusé', $status, $data);
+    }
+}
+
+/**
+ * Étape 3 — attend que LinkedIn ait fini de traiter le document.
+ * L'API Documents ne propose pas d'upload synchrone : publier avant la fin du
+ * traitement échoue. La lecture du statut demande r_member_social /
+ * r_organization_social, absents de certaines apps : quand elle est refusée,
+ * on laisse un court délai et on poursuit — c'est alors la publication qui
+ * remontera l'erreur réelle, plutôt que de bloquer sur un contrôle facultatif.
+ */
+function li_document_await(array $settings, string $documentUrn): void
+{
+    $deadline = time() + LINKEDIN_DOC_POLL_TIMEOUT;
+    $delay    = 1;
+
+    while (true) {
+        [$status, , $data] = li_rest($settings, 'GET', '/rest/documents/' . rawurlencode($documentUrn));
+        if ($status !== 200) {
+            sleep(3);
+            return;
+        }
+        $state = (string) ($data['status'] ?? '');
+        if ($state === 'AVAILABLE') {
+            return;
+        }
+        if ($state === 'PROCESSING_FAILED') {
+            throw new McpToolError('LinkedIn a rejeté le document pendant son traitement (PROCESSING_FAILED) : vérifiez qu\'il ne dépasse pas 100 Mo et 300 pages, et qu\'il n\'est ni protégé par mot de passe ni corrompu.');
+        }
+        if (time() + $delay >= $deadline) {
+            throw new McpToolError('Le document est toujours en cours de traitement chez LinkedIn après '
+                . LINKEDIN_DOC_POLL_TIMEOUT . ' s (statut : ' . ($state !== '' ? $state : 'inconnu')
+                . '). Le post n\'a pas été publié : réessayez dans quelques instants.');
+        }
+        sleep($delay);
+        $delay = min($delay * 2, 5);
+    }
+}
+
 /* ------------------------------------------------------------ Client HTTP */
 
 /**
@@ -661,14 +1018,14 @@ function li_rest(array $settings, string $method, string $pathAndQuery, ?array $
 }
 
 /** Requête HTTP bas niveau (cURL). Retourne [status, headers, corps décodé]. */
-function li_http(string $method, string $url, array $headers = [], ?string $rawBody = null): array
+function li_http(string $method, string $url, array $headers = [], ?string $rawBody = null, int $timeout = 30): array
 {
     $respHeaders = [];
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_CUSTOMREQUEST  => $method,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_TIMEOUT        => $timeout,
         CURLOPT_HTTPHEADER     => $headers,
         CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$respHeaders) {
             if (str_contains($line, ':')) {
@@ -701,6 +1058,7 @@ function li_api_error(string $prefix, int $status, array $data): McpToolError
     $detail = (string) ($data['message'] ?? $data['error_description'] ?? $data['error'] ?? '');
     $hint   = match (true) {
         $status === 401 => 'Le token LinkedIn est expiré ou révoqué : le propriétaire doit se reconnecter depuis la page du connecteur.',
+        $status === 403 && stripos($detail, 'document') !== false => 'Permission refusée sur le document : pour publier au nom d\'une page, vous devez en être administrateur (ou « DSC poster ») et le produit « Community Management API » doit être actif sur l\'app LinkedIn.',
         $status === 403 => 'Permission refusée par LinkedIn : vérifiez que le produit requis est activé sur votre app LinkedIn (« Share on LinkedIn » pour publier, « Community Management API » pour les statistiques — voir README).',
         $status === 422 => 'Requête refusée par LinkedIn (contenu invalide ou doublon récent).',
         $status === 429 => 'Quota d\'appels LinkedIn atteint : réessayez plus tard.',

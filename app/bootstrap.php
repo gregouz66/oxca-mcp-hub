@@ -9,7 +9,7 @@
 
 declare(strict_types=1);
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
