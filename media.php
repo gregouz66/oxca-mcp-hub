@@ -26,10 +26,16 @@ if (!media_key_valid($key)) {
     media_serve_error(404, 'Média introuvable.');
 }
 
-media_gc();
-
-$meta = media_meta($key);
-$size = $meta !== null ? @filesize(media_path($key, 'bin')) : false;
+// Le ménage est accessoire : un répertoire illisible ne doit pas empêcher de
+// servir un média, ni transformer cette réponse en page d'erreur vide.
+try {
+    media_gc();
+    $meta = media_meta($key);
+    $size = $meta !== null ? @filesize(media_path($key, 'bin')) : false;
+} catch (Throwable $e) {
+    error_log('media.php : ' . $e->getMessage());
+    media_serve_error(404, 'Média introuvable ou expiré.');
+}
 if ($meta === null || $size === false) {
     media_serve_error(404, 'Média introuvable ou expiré.');
 }

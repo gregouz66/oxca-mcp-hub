@@ -16,6 +16,21 @@
 /** Qualités JPEG essayées successivement pour tenir sous la limite de poids. */
 const IMAGE_JPEG_QUALITIES = [90, 82, 74, 66, 58, 50];
 
+/**
+ * Nombre de pixels au-delà duquel on refuse de décoder une image.
+ *
+ * C'est la seule protection utile contre une « bombe de décompression » : un
+ * JPEG uni de 4 Mo peut couvrir 256 mégapixels et occuper 1 Go une fois
+ * décodé. Mesuré : environ 4 Mo de mémoire résidente par mégapixel — et cette
+ * mémoire est allouée par GD, donc **invisible à memory_limit**, qui ne la
+ * plafonne pas. Sans cette borne, le processus se fait tuer par le système
+ * plutôt que d'échouer proprement.
+ *
+ * 32 mégapixels laissent passer toutes les photos d'appareils courants
+ * (24 Mpx sur un capteur haut de gamme) pour environ 145 Mo de pointe.
+ */
+const IMAGE_MAX_PIXELS = 32000000;
+
 /** GD est-il utilisable pour transcoder ? */
 function image_gd_available(): bool
 {
@@ -77,6 +92,22 @@ function image_prepare(string $bytes, array $spec, string $fit, string $label): 
     if (!image_gd_available()) {
         throw new McpToolError(image_nonconformity_message($info, $spec, $label)
             . ' L\'extension GD n\'est pas disponible sur cet hébergement : la conversion automatique est impossible, fournissez une image déjà conforme.');
+    }
+
+    // Contrôle AVANT décodage : passé ce point, c'est le système qui arbitre.
+    $pixels = $info['width'] * $info['height'];
+    if ($pixels > IMAGE_MAX_PIXELS) {
+        throw new McpToolError(sprintf(
+            '« %s » fait %d × %d pixels (%s mégapixels), au-delà de ce que ce serveur peut décoder sans risquer de manquer de mémoire (%s mégapixels). '
+            . 'Le poids du fichier n\'est pas en cause : une image très compressée peut occuper plusieurs centaines de mégaoctets une fois décodée. '
+            . 'Réduisez ses dimensions avant de l\'envoyer — Instagram n\'affiche de toute façon pas plus de %d px de large.',
+            $label,
+            $info['width'],
+            $info['height'],
+            round($pixels / 1000000),
+            round(IMAGE_MAX_PIXELS / 1000000),
+            (int) $spec['max_width']
+        ));
     }
 
     $im = @imagecreatefromstring($bytes);

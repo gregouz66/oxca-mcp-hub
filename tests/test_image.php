@@ -132,3 +132,35 @@ test('les orientations EXIF en miroir tournent dans le bon sens', function () {
     assert_contains('6, 7    => -90', $source);
     assert_contains('5, 8    => 90', $source);
 });
+
+test('une image aux dimensions démesurées est refusée avant décodage', function () use ($spec) {
+    // Une « bombe de décompression » : un JPEG uni de quelques Mo peut couvrir
+    // des centaines de mégapixels. GD alloue environ 4 Mo par mégapixel, hors
+    // du memory_limit de PHP — le processus se ferait donc tuer par le système
+    // au lieu d'échouer proprement.
+    $im = imagecreatetruecolor(7000, 6000); // 42 Mpx, au-delà de la borne
+    imagefilledrectangle($im, 0, 0, 7000, 6000, imagecolorallocate($im, 210, 215, 220));
+    ob_start();
+    imagejpeg($im, null, 60);
+    imagedestroy($im);
+    $bombe = (string) ob_get_clean();
+
+    assert_true(strlen($bombe) < $spec['max_bytes'], 'le fichier doit passer la garde de poids : c\'est tout l\'enjeu');
+    $e = assert_throws(fn () => image_prepare($bombe, $spec, 'reject', 'photo'), 'mégapixels', McpToolError::class);
+    assert_contains('Le poids du fichier n\'est pas en cause', $e->getMessage());
+    assert_contains('1440', $e->getMessage(), 'le message doit dire à quoi réduire');
+});
+
+test('une photo d\'appareil courante reste acceptée', function () use ($spec) {
+    // 24 Mpx : un capteur haut de gamme. La borne ne doit pas gêner un usage normal.
+    $im = imagecreatetruecolor(6000, 4000);
+    imagefilledrectangle($im, 0, 0, 6000, 4000, imagecolorallocate($im, 120, 160, 200));
+    ob_start();
+    imagejpeg($im, null, 70);
+    imagedestroy($im);
+    $photo = (string) ob_get_clean();
+
+    $out = image_prepare($photo, $spec, 'pad', 'photo');
+    assert_eq(1440, $out['width']);
+    assert_eq('image/jpeg', $out['mime']);
+});

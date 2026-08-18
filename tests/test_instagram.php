@@ -580,14 +580,14 @@ test('un carrousel dont les images cumulées épuiseraient la mémoire est refus
     // Chaque image passe seule, mais leur cumul dépasse ce que PHP peut traiter :
     // sans ce contrôle, l'erreur serait fatale au milieu du traitement et le
     // client MCP ne recevrait aucune réponse exploitable.
-    $part  = str_repeat('A', 20000000);
+    $part  = str_repeat('A', 15000000);
     $items = array_fill(0, 5, ['image_base64' => $part]);
 
     $e = assert_throws(fn () => ig_check_total_payload($items), 'totalisent environ', McpToolError::class);
     assert_contains('image_url', $e->getMessage());
 
-    // Trois images de la même taille restent sous le plafond.
-    ig_check_total_payload(array_fill(0, 3, ['image_base64' => $part]));
+    // Deux images de la même taille restent sous le plafond.
+    ig_check_total_payload(array_fill(0, 2, ['image_base64' => $part]));
 });
 
 test('un carrousel de dix photos ordinaires reste dans le budget mémoire', function () {

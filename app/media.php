@@ -71,9 +71,18 @@ function media_put(string $bytes, string $mime): array
 {
     media_gc();
 
-    $key = random_hex(16);
-    if (@file_put_contents(media_path($key, 'bin'), $bytes, LOCK_EX) === false) {
-        throw new RuntimeException('Écriture impossible dans storage/media : vérifiez les droits du répertoire.');
+    $key     = random_hex(16);
+    $written = @file_put_contents(media_path($key, 'bin'), $bytes, LOCK_EX);
+    // Un disque plein n'échoue pas : il écrit moins d'octets que demandé.
+    // Publier un fichier tronqué donnerait une erreur incompréhensible côté
+    // Instagram, et le fichier resterait sur le disque sans métadonnées — donc
+    // hors de portée du ramasse-miettes.
+    if ($written === false || $written !== strlen($bytes)) {
+        @unlink(media_path($key, 'bin'));
+        throw new RuntimeException($written === false
+            ? 'Écriture impossible dans storage/media : vérifiez les droits du répertoire.'
+            : 'Écriture incomplète dans storage/media (' . $written . ' octets sur ' . strlen($bytes)
+              . ') : le disque du serveur est probablement plein.');
     }
     $meta = [
         'mime'       => $mime,

@@ -65,3 +65,19 @@ test('storage/media n\'est pas servi directement par le serveur web', function (
     assert_true(str_starts_with(media_dir(), dirname(__DIR__) . '/storage/'),
         'les dépôts doivent rester sous storage/');
 });
+
+test('une écriture incomplète ne laisse ni fichier tronqué ni orphelin', function () {
+    // Un disque plein n'échoue pas : file_put_contents écrit moins d'octets
+    // que demandé. Publier un tel fichier donnerait une erreur incompréhensible
+    // côté Instagram, et il resterait sur le disque sans métadonnées — donc
+    // invisible au ramasse-miettes.
+    $source = file_get_contents(dirname(__DIR__) . '/app/media.php');
+    assert_contains('$written !== strlen($bytes)', $source, 'le nombre d\'octets écrits doit être vérifié');
+    assert_contains('@unlink(media_path($key, \'bin\'))', $source, 'le fichier partiel doit être supprimé');
+
+    $avant = count(glob(media_dir() . '/*') ?: []);
+    $put   = media_put('contenu complet', 'image/jpeg');
+    assert_eq('contenu complet', file_get_contents(media_path($put['key'], 'bin')));
+    media_forget($put['key']);
+    assert_eq($avant, count(glob(media_dir() . '/*') ?: []), 'aucun fichier ne doit rester');
+});

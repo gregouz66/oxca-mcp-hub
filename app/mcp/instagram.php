@@ -66,7 +66,7 @@ const IG_COLLABORATORS_MAX  = 3;
  * illisible pour le client. Mieux vaut refuser tôt et expliquer.
  */
 const IG_BASE64_MAX_CHARS       = 24000000;  // ~18 Mo par image
-const IG_BASE64_MAX_TOTAL_CHARS = 64000000;  // ~48 Mo pour un carrousel entier
+const IG_BASE64_MAX_TOTAL_CHARS = 43000000;  // ~32 Mo pour un carrousel entier
 
 /** Quota de publication retenu par défaut, à défaut de lecture au runtime. */
 const IG_QUOTA_FALLBACK = 50;
@@ -535,7 +535,6 @@ function ig_tool_publish_image(array $settings, array $args): array
     ig_require_connection($settings);
 
     $caption = ig_check_caption($args['caption'] ?? '');
-    $deadline = time() + IG_POLL_BUDGET;
 
     $media  = ig_resolve_image($settings, $args, 'image', $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
     $params = ['image_url' => $media['url']];
@@ -552,7 +551,9 @@ function ig_tool_publish_image(array $settings, array $args): array
     }
 
     $containerId = ig_container_create($settings, $params);
-    ig_container_await($settings, $containerId, $deadline, [$containerId]);
+    // Le budget démarre ici : le compter depuis le début de l'outil ferait
+    // annoncer « Instagram traite encore » avant même qu'il ait eu la main.
+    ig_container_await($settings, $containerId, time() + IG_POLL_BUDGET, [$containerId]);
     $result = ig_publish($settings, $containerId);
 
     ig_sweep_media();
@@ -564,8 +565,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
 {
     ig_require_connection($settings);
 
-    $caption  = ig_check_caption($args['caption'] ?? '');
-    $deadline = time() + IG_POLL_BUDGET;
+    $caption = ig_check_caption($args['caption'] ?? '');
 
     // Reprise : des conteneurs enfants déjà prêts peuvent être réutilisés.
     $children = [];
@@ -614,6 +614,9 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         }
 
         // Chaque enfant doit être prêt : créer le parent trop tôt échoue.
+        // Le budget ne démarre qu'ici, une fois les conversions et les envois
+        // terminés : sinon il serait déjà épuisé avant la première attente.
+        $deadline = time() + IG_POLL_BUDGET;
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
@@ -622,6 +625,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     // Sur une reprise, les enfants viennent de l'appelant : rien ne garantit
     // qu'Instagram a fini de les traiter, et créer le parent trop tôt échoue.
     if (($args['children'] ?? []) !== []) {
+        $deadline = time() + IG_POLL_BUDGET;
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
@@ -639,7 +643,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     ig_apply_common_params($params, $args);
 
     $parentId = ig_container_create($settings, $params);
-    ig_container_await($settings, $parentId, $deadline, [$parentId]);
+    ig_container_await($settings, $parentId, time() + IG_POLL_BUDGET, [$parentId]);
     $result = ig_publish($settings, $parentId);
 
     ig_sweep_media();
@@ -1018,7 +1022,13 @@ function ig_stage_bytes(string $bytes, string $label, string $fit): array
  */
 function ig_sweep_media(): void
 {
-    media_gc();
+    // La publication est faite : plus rien ici ne doit pouvoir la faire
+    // passer pour un échec aux yeux de l'appelant.
+    try {
+        media_gc();
+    } catch (Throwable $e) {
+        error_log('Instagram : purge des médias impossible — ' . $e->getMessage());
+    }
 }
 
 /* ------------------------------------------------------------- Garde-fous */
