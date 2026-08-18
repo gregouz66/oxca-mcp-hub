@@ -149,7 +149,8 @@ function http_download_limited(
     int $maxBytes,
     string $label,
     int $timeout,
-    string $sizeMessage
+    string $sizeMessage,
+    ?array &$info = null
 ): string {
     http_guard_public_url($url, $label);
 
@@ -206,6 +207,14 @@ function http_download_limited(
         });
     }
     $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    // L'appelant peut avoir besoin de savoir que l'URL demandée n'est pas
+    // celle qui a répondu : un tiers qui ne suit pas les redirections, lui,
+    // n'obtiendrait pas le même contenu.
+    $info = [
+        'redirects'     => (int) curl_getinfo($ch, CURLINFO_REDIRECT_COUNT),
+        'effective_url' => (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL),
+        'content_type'  => (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE),
+    ];
     curl_close($ch);
 
     if ($status !== 200) {

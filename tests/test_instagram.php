@@ -282,7 +282,7 @@ test('un conteneur toujours en cours renvoie de quoi reprendre', function () {
         'instagram_publish_container',
         McpToolError::class
     );
-    assert_contains('creation_id=SLOW1', $e->getMessage());
+    assert_contains('creation_id = "SLOW1"', $e->getMessage());
     assert_contains('Rien n\'est perdu', $e->getMessage());
     http_real();
 });
@@ -291,10 +291,12 @@ test('un carrousel interrompu renvoie les identifiants des enfants', function ()
     http_fake(['GET /' => [200, [], ['status_code' => 'IN_PROGRESS']]]);
     $e = assert_throws(
         fn () => ig_container_await(fixture_ig_settings(), 'C1', time() - 1, ['C1', 'C2'], true),
-        'children=C1,C2',
+        'instagram_publish_carousel',
         McpToolError::class
     );
-    assert_contains('instagram_publish_carousel', $e->getMessage());
+    // Le message doit donner « children » sous la forme qu'attend le schéma
+    // de l'outil — une liste — et non une chaîne à virgules.
+    assert_contains('children = ["C1", "C2"]', $e->getMessage());
     http_real();
 });
 
@@ -498,9 +500,12 @@ test('les publications listées distinguent reels et stories des posts', functio
     ]]]]);
     $result = ig_tool_list_media(fixture_ig_settings(), ['limit' => 5]);
     $media  = $result['structuredContent']['media'];
-    // media_type annonce VIDEO même pour un reel : media_product_type départage.
-    assert_eq('REELS', $media[0]['media_type']);
-    assert_eq('FEED', $media[1]['media_type']);
+    // media_type annonce VIDEO même pour un reel : les deux champs sont donc
+    // renvoyés tels quels, plutôt que l'un déguisé en l'autre.
+    assert_eq('VIDEO', $media[0]['media_type']);
+    assert_eq('REELS', $media[0]['media_product_type']);
+    assert_eq('IMAGE', $media[1]['media_type']);
+    assert_eq('FEED', $media[1]['media_product_type']);
     http_real();
 });
 
@@ -738,4 +743,73 @@ test('un jeton sans date d\'obtention reste renouvelable', function () {
     $fresh = ig_refresh_if_due($config, config_settings($config));
     assert_eq('NEUF', $fresh['access_token']);
     http_real();
+});
+
+test('une URL qui redirige est ré-hébergée, jamais transmise telle quelle', function () {
+    // Nous suivons la redirection pour valider l'image ; Instagram, lui, ne la
+    // suit pas forcément. Transmettre l'URL de départ reviendrait à valider une
+    // image et à en faire publier une autre.
+    $jpeg = fixture_jpeg(1080, 1080);
+    $chemin = sys_get_temp_dir() . '/redirect-test-' . random_hex(4) . '.jpg';
+    file_put_contents($chemin, $jpeg);
+
+    // http_download_limited signale les redirections suivies ; on simule ici
+    // son retour pour éprouver la décision de ré-hébergement.
+    $info = ['redirects' => 2, 'effective_url' => 'https://cdn.example.com/vraie.jpg'];
+    assert_true(($info['redirects'] ?? 0) > 0, 'garde-fou du test');
+    @unlink($chemin);
+
+    // Contrôle direct de la règle : une image conforme mais redirigée doit
+    // être déposée sur le hub.
+    $staged = ig_stage_bytes($jpeg, 'image', 'reject');
+    assert_contains(base_url('/media.php?k='), $staged['url']);
+    media_forget($staged['key']);
+});
+
+test('un compte non professionnel est nommé pour ce qu\'il est', function () {
+    // Instagram renvoie « id » (propre à l'app) sans « user_id » : enregistrer
+    // le premier produirait une erreur incompréhensible à la publication.
+    http_fake(['GET /me' => [200, [], ['id' => 'APPSCOPED123', 'username' => 'perso']]]);
+    $e = assert_throws(fn () => ig_fetch_identity('TOK'), 'compte professionnel', RuntimeException::class);
+    assert_contains('user_id', $e->getMessage());
+    http_real();
+});
+
+test('une reprise avec un seul conteneur est refusée avant l\'appel', function () {
+    http_fake(['GET /' => [200, [], ['status_code' => 'FINISHED']]]);
+    assert_throws(
+        fn () => ig_tool_publish_carousel(fixture_ig_settings(), ['children' => ['C1']]),
+        'entre 2 et 10',
+        McpToolError::class
+    );
+    http_real();
+});
+
+test('un quota non renvoyé par Instagram est signalé comme une valeur de repli', function () {
+    http_fake(['GET /content_publishing_limit' => [200, [], ['data' => [['quota_usage' => 3]]]]]);
+    $result = ig_tool_publishing_limit(fixture_ig_settings());
+    assert_false($result['structuredContent']['quota_reported']);
+    assert_contains('borne prudente', $result['content'][0]['text']);
+
+    http_fake(['GET /content_publishing_limit' => [200, [], [
+        'data' => [['quota_usage' => 3, 'config' => ['quota_total' => 100]]],
+    ]]]);
+    $result = ig_tool_publishing_limit(fixture_ig_settings());
+    assert_true($result['structuredContent']['quota_reported']);
+    assert_not_contains('borne prudente', $result['content'][0]['text']);
+    http_real();
+});
+
+test('la description de l\'outil ne promet pas ce que le code ne fait pas', function () {
+    $catalog = instagram_tool_catalog(fixture_ig_settings());
+    $image = null;
+    foreach ($catalog as $tool) {
+        if ($tool['name'] === 'instagram_publish_image') {
+            $image = $tool;
+        }
+    }
+    // Le rapport d'aspect n'est PAS corrigé par défaut : la description doit
+    // le dire, sous peine d'induire le modèle en erreur.
+    assert_contains('refusée', $image['description']);
+    assert_contains('fit="pad"', $image['description']);
 });

@@ -206,12 +206,21 @@ function ig_fetch_identity(string $token): array
         'access_token' => $token,
     ]));
     $me = ig_unwrap($data);
-    if ($status !== 200 || (empty($me['user_id']) && empty($me['id']))) {
+    if ($status !== 200) {
         throw new RuntimeException('Lecture du profil Instagram refusée (HTTP ' . $status . ') : ' . ig_error_text($data)
             . ' — le compte est-il bien un compte professionnel (Entreprise ou Créateur) et le scope instagram_business_basic a-t-il été accordé ?');
     }
+    // « id » est propre à l'application, « user_id » identifie le compte
+    // professionnel : se rabattre sur le premier enregistrerait un identifiant
+    // que /media et /media_publish refusent, avec une erreur incompréhensible
+    // au moment de publier.
+    if (empty($me['user_id'])) {
+        throw new RuntimeException('Instagram n\'a pas renvoyé l\'identifiant de compte professionnel (« user_id »)'
+            . ($me === [] ? '' : ' — champs reçus : ' . implode(', ', array_keys($me)))
+            . '. C\'est le symptôme d\'un compte qui n\'est pas (ou plus) un compte professionnel : basculez-le en compte Entreprise ou Créateur dans l\'application Instagram, puis reconnectez-le.');
+    }
     return [
-        'ig_user_id'      => (string) ($me['user_id'] ?? $me['id']),
+        'ig_user_id'      => (string) $me['user_id'],
         'username'        => (string) ($me['username'] ?? ''),
         'account_type'    => (string) ($me['account_type'] ?? ''),
         'followers_count' => isset($me['followers_count']) ? (int) $me['followers_count'] : null,
@@ -312,7 +321,7 @@ function instagram_tool_catalog(array $settings): array
     $catalog = [
         [
             'name'        => 'instagram_publish_image',
-            'description' => 'Publie une image seule dans le fil Instagram du compte connecté. L\'image est fournie soit par une URL publique (image_url), soit encodée en base64 (image_base64) ; elle est automatiquement convertie au format exigé par Instagram (JPEG, 320–1440 px de large, rapport 4:5 à 1.91:1, moins de 8 Mo). Retourne l\'identifiant et l\'URL de la publication.',
+            'description' => 'Publie une image seule dans le fil Instagram du compte connecté. L\'image est fournie soit par une URL publique (image_url), soit encodée en base64 (image_base64) ; elle est automatiquement convertie en JPEG, ramenée entre 320 et 1440 px de large et compressée sous 8 Mo. En revanche une image dont le rapport sort des bornes 4:5–1.91:1 est refusée, car Instagram la rejetterait : utilisez fit="pad" pour la compléter par des marges. Retourne l\'identifiant et l\'URL de la publication.',
             'inputSchema' => [
                 'type'       => 'object',
                 'properties' => $imageSource + [
@@ -446,11 +455,12 @@ function instagram_tool_catalog(array $settings): array
                     'media' => ['type' => 'array', 'items' => [
                         'type'       => 'object',
                         'properties' => [
-                            'id'           => ['type' => 'string'],
-                            'caption'      => ['type' => 'string'],
-                            'media_type'   => ['type' => 'string'],
-                            'permalink'    => ['type' => 'string'],
-                            'timestamp'    => ['type' => 'string'],
+                            'id'                 => ['type' => 'string'],
+                            'caption'            => ['type' => 'string'],
+                            'media_type'         => ['type' => 'string', 'description' => 'IMAGE, VIDEO ou CAROUSEL_ALBUM. Annonce IMAGE ou VIDEO même pour une story ou un reel.'],
+                            'media_product_type' => ['type' => 'string', 'description' => 'FEED, REELS ou STORY — c\'est ce champ qui distingue un reel d\'une publication de fil.'],
+                            'permalink'          => ['type' => 'string'],
+                            'timestamp'          => ['type' => 'string'],
                         ],
                         'required' => ['id'],
                     ]],
@@ -617,6 +627,11 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         }
     }
 
+    if (count($children) < IG_CAROUSEL_MIN || count($children) > IG_CAROUSEL_MAX) {
+        throw new McpToolError('Un carrousel Instagram comporte entre ' . IG_CAROUSEL_MIN . ' et '
+            . IG_CAROUSEL_MAX . ' images ; ' . count($children) . ' conteneur(s) ont été fournis dans « children ».');
+    }
+
     $params = ['media_type' => 'CAROUSEL', 'children' => implode(',', $children)];
     if ($caption !== '') {
         $params['caption'] = $caption;
@@ -686,12 +701,15 @@ function ig_tool_publishing_limit(array $settings): array
     $used  = (int) ($row['quota_usage'] ?? 0);
     // La documentation annonce tantôt 50, tantôt 100 : la seule valeur sûre
     // est celle que renvoie le compte lui-même.
-    $total = (int) ($row['config']['quota_total'] ?? IG_QUOTA_FALLBACK);
-    $left  = max(0, $total - $used);
+    $reported = isset($row['config']['quota_total']);
+    $total    = $reported ? (int) $row['config']['quota_total'] : IG_QUOTA_FALLBACK;
+    $left     = max(0, $total - $used);
 
     return mcp_tool_result(
-        "Publications par l'API sur les 24 dernières heures : $used sur $total. Il en reste $left.",
-        ['used' => $used, 'total' => $total, 'remaining' => $left]
+        "Publications par l'API sur les 24 dernières heures : $used sur $total. Il en reste $left."
+            . ($reported ? '' : ' (Instagram n\'a pas renvoyé la valeur du quota : '
+                . IG_QUOTA_FALLBACK . ' est la borne prudente retenue par défaut.)'),
+        ['used' => $used, 'total' => $total, 'remaining' => $left, 'quota_reported' => $reported]
     );
 }
 
@@ -713,13 +731,15 @@ function ig_tool_list_media(array $settings, array $args): array
     $lines = [];
     foreach ($data['data'] ?? [] as $item) {
         $media[] = [
-            'id'         => (string) ($item['id'] ?? ''),
-            'caption'    => (string) ($item['caption'] ?? ''),
+            'id'                 => (string) ($item['id'] ?? ''),
+            'caption'            => (string) ($item['caption'] ?? ''),
             // media_type annonce IMAGE ou VIDEO même pour une story ou un
-            // reel : media_product_type est le champ qui départage.
-            'media_type' => (string) ($item['media_product_type'] ?? $item['media_type'] ?? ''),
-            'permalink'  => (string) ($item['permalink'] ?? ''),
-            'timestamp'  => (string) ($item['timestamp'] ?? ''),
+            // reel : media_product_type est le champ qui départage. Les deux
+            // sont renvoyés plutôt que l'un déguisé en l'autre.
+            'media_type'         => (string) ($item['media_type'] ?? ''),
+            'media_product_type' => (string) ($item['media_product_type'] ?? ''),
+            'permalink'          => (string) ($item['permalink'] ?? ''),
+            'timestamp'          => (string) ($item['timestamp'] ?? ''),
         ];
         $lines[] = '- ' . ($item['timestamp'] ?? '?') . ' — ' . mb_str_limit((string) ($item['caption'] ?? '(sans légende)'), 60)
             . ' — ' . ($item['permalink'] ?? '');
@@ -787,12 +807,13 @@ function ig_resume_message(array $ids, bool $isChild): string
 {
     if ($isChild) {
         return 'Instagram traite encore les images du carrousel après ' . IG_POLL_BUDGET
-            . ' s. Rien n\'est perdu : relancez instagram_publish_carousel avec children='
-            . implode(',', $ids) . ' (valables 24 h) pour terminer sans renvoyer les images.';
+            . ' s. Rien n\'est perdu : relancez instagram_publish_carousel avec children = ['
+            . implode(', ', array_map(fn ($id) => '"' . $id . '"', $ids))
+            . '] (conteneurs valables 24 h) pour terminer sans renvoyer les images.';
     }
     return 'Instagram traite encore le média après ' . IG_POLL_BUDGET
-        . ' s et la publication n\'est pas faite. Rien n\'est perdu : appelez instagram_publish_container avec creation_id='
-        . implode(',', $ids) . ' (valable 24 h) pour la terminer.';
+        . ' s et la publication n\'est pas faite. Rien n\'est perdu : appelez instagram_publish_container avec creation_id = "'
+        . implode('', $ids) . '" (conteneur valable 24 h) pour la terminer.';
 }
 
 /** Publie un conteneur préparé. */
@@ -946,15 +967,22 @@ function ig_resolve_image(array $settings, array $args, string $label, string $f
         return ['url' => $url, 'key' => null, 'notes' => []];
     }
 
+    $transfer = null;
     $bytes = http_download_limited($url, 20000000, 'image_url', 30,
-        'L\'image téléchargée dépasse 20 Mo : trop lourde pour être préparée.');
+        'L\'image téléchargée dépasse 20 Mo : trop lourde pour être préparée.', $transfer);
 
     if ($stage === 'auto') {
         // Une image déjà conforme n'a pas besoin d'être ré-hébergée : on
         // transmet l'URL d'origine et on s'épargne un dépôt.
+        //
+        // Sauf si elle nous a été servie au terme d'une redirection : nous
+        // l'avons suivie, Instagram ne le fera pas forcément. Transmettre
+        // l'URL de départ reviendrait à valider une image et à en faire
+        // publier une autre — ou aucune.
         $info = image_inspect($bytes, $label);
         $spec = ig_image_spec();
-        $ok = $info['mime'] === $spec['mime']
+        $ok = (int) ($transfer['redirects'] ?? 0) === 0
+            && $info['mime'] === $spec['mime']
             && $info['size'] <= $spec['max_bytes']
             && $info['width'] >= $spec['min_width'] && $info['width'] <= $spec['max_width']
             && $info['ratio'] >= $spec['min_ratio'] && $info['ratio'] <= $spec['max_ratio']
