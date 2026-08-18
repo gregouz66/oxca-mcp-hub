@@ -4,6 +4,24 @@
 > (`developers.facebook.com/docs/instagram-platform/…`), recherche puis
 > contre-vérification adversariale de chaque affirmation chiffrée.
 > Les points non tranchés par la documentation sont marqués **⚠️**.
+>
+> **✅ Ce plan a été implémenté.** Le connecteur est en place : voir
+> `app/mcp/instagram.php`, `app/media.php`, `app/image.php`, `media.php`,
+> `oauth-instagram.php`, et la section « Créer votre app Instagram » du
+> README. Ce document reste la référence des **faits d'API** et des choix
+> de conception — c'est à ce titre qu'il est conservé.
+>
+> Deux écarts assumés par rapport au plan initial, tous deux découverts en
+> implémentant :
+>
+> 1. **Les garde-fous anti-SSRF ne résolvent plus le DNS** quand l'URL est
+>    seulement transmise à Instagram sans être téléchargée par le hub : une
+>    résolution indisponible refusait des URL parfaitement valides, pour une
+>    protection qui n'a de sens que si *nous* joignons l'adresse.
+> 2. **Un plafond de poids a été ajouté sur les envois en base64** (~18 Mo par
+>    image, ~48 Mo par carrousel). Mesure à l'appui : dix images de 8 Mo
+>    épuisent la mémoire d'un mutualisé et PHP s'arrête en cours de
+>    traitement — le client MCP ne reçoit alors aucune réponse exploitable.
 
 ---
 

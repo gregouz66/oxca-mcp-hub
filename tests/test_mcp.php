@@ -146,3 +146,78 @@ test('un token mal formé est rejeté sans requête en base', function () {
     assert_eq(null, grant_by_token('oxm_' . str_repeat('z', 48)));
     assert_eq(null, grant_by_token(''));
 });
+
+test('une publication complète traverse toute la chaîne, du JSON-RPC à l\'API', function () {
+    [$config, $grant] = fixture_config('instagram', fixture_ig_settings());
+
+    $created = 0;
+    http_fake_fn(function ($m, $u, $h, $b) use (&$created) {
+        $p = http_fake_params($u, $b);
+        if ($m === 'POST' && str_contains($u, '/media_publish')) {
+            return [200, [], ['id' => 'MEDIA_E2E']];
+        }
+        if ($m === 'POST' && str_contains($u, '/media')) {
+            $created++;
+            return [200, [], ['id' => isset($p['children']) ? 'PARENT' : 'ENFANT' . $created]];
+        }
+        if (str_contains($u, 'permalink')) {
+            return [200, [], ['permalink' => 'https://www.instagram.com/p/E2E/']];
+        }
+        return [200, [], ['status_code' => 'FINISHED']];
+    });
+
+    // Exactement ce qu'enverrait Claude : un message JSON-RPC avec deux images
+    // en base64 et une légende contenant emoji, retour à la ligne et hashtag.
+    $message = [
+        'jsonrpc' => '2.0', 'id' => 42, 'method' => 'tools/call',
+        'params'  => [
+            'name'      => 'instagram_publish_carousel',
+            'arguments' => [
+                'caption' => "Deux vues 📸\nDu même endroit #paris",
+                'items'   => [
+                    ['image_base64' => base64_encode(fixture_png(1080, 1080)), 'alt_text' => 'Vue de face'],
+                    ['image_base64' => base64_encode(fixture_jpeg(1080, 1350)), 'alt_text' => 'Vue de côté'],
+                ],
+            ],
+        ],
+    ];
+    [$status, $reply] = mcp_handle_body(json_encode($message), $config, $grant);
+
+    assert_eq(200, $status);
+    assert_eq(42, $reply['id']);
+    assert_false($reply['result']['isError'], json_encode($reply['result']['content'] ?? []));
+    assert_eq('MEDIA_E2E', $reply['result']['structuredContent']['media_id']);
+    assert_eq('https://www.instagram.com/p/E2E/', $reply['result']['structuredContent']['permalink']);
+    // Le PNG a dû être converti : le connecteur doit le dire à l'utilisateur.
+    assert_contains('convertie de image/png', implode(' ', $reply['result']['structuredContent']['notes']));
+
+    // La légende arrive intacte chez Instagram, emoji et retour ligne compris :
+    // c'est http_build_query qui l'encode, jamais une concaténation à la main.
+    $posts = array_values(array_filter(http_calls(), fn ($c) => $c['method'] === 'POST'));
+    parse_str((string) $posts[2]['body'], $parent);
+    assert_eq("Deux vues 📸\nDu même endroit #paris", $parent['caption']);
+    assert_eq('ENFANT1,ENFANT2', $parent['children']);
+    http_real();
+});
+
+test('deux connecteurs Instagram distincts ne se mélangent pas', function () {
+    [$a, $ga] = fixture_config('instagram', fixture_ig_settings(['ig_user_id' => '111', 'username' => 'compte_a']));
+    [$b, $gb] = fixture_config('instagram', fixture_ig_settings(['ig_user_id' => '222', 'username' => 'compte_b']));
+
+    $seen = [];
+    http_fake_fn(function ($m, $u) use (&$seen) {
+        if (str_contains($u, 'content_publishing_limit')) {
+            preg_match('#/(\d+)/content_publishing_limit#', $u, $match);
+            $seen[] = $match[1] ?? '?';
+        }
+        return [200, [], ['data' => [['quota_usage' => 1, 'config' => ['quota_total' => 50]]]]];
+    });
+
+    mcp_handle_body(json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call',
+        'params' => ['name' => 'instagram_publishing_limit', 'arguments' => []]]), $a, $ga);
+    mcp_handle_body(json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/call',
+        'params' => ['name' => 'instagram_publishing_limit', 'arguments' => []]]), $b, $gb);
+
+    assert_eq(['111', '222'], $seen, 'chaque connecteur doit interroger son propre compte');
+    http_real();
+});
