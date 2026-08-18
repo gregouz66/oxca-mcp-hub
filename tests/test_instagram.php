@@ -891,28 +891,50 @@ test('la description de l\'outil ne promet pas ce que le code ne fait pas', func
     assert_contains('fit="pad"', $image['description']);
 });
 
-test('le budget d\'attente tient compte du temps d\'exécution restant', function () {
-    $maxInitial = ini_get('max_execution_time');
-    $requete    = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
-
+test('le budget d\'attente tient compte du temps déjà écoulé', function () {
+    // Le risque à couvrir est la minuterie du serveur web ou du proxy, qui
+    // compte en temps mural et coupe la connexion : l'appelant perdrait alors
+    // la réponse qui lui dit comment reprendre.
+    $requete = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
     try {
-        // Un mutualisé coupe souvent à 30 s : attendre 25 s alors que 20 sont
-        // déjà consommées ferait tuer le script en pleine attente, privant
-        // l'appelant de la réponse qui lui dit comment reprendre.
-        ini_set('max_execution_time', '30');
-
         $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
         assert_eq(IG_POLL_BUDGET, ig_poll_deadline() - time(), 'requête qui démarre');
 
+        // Une longue préparation ne doit PAS amputer l'attente tant que
+        // l'enveloppe murale le permet : c'est là qu'Instagram a besoin de temps.
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 25;
+        assert_eq(IG_POLL_BUDGET, ig_poll_deadline() - time(), '25 s de préparation');
+
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 40;
+        assert_eq(IG_WALL_ENVELOPE - 40, ig_poll_deadline() - time(), '40 s de préparation');
+
+        // Près de l'enveloppe, on garde un plancher : mieux vaut une attente
+        // courte suivie d'un message de reprise qu'une connexion coupée.
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - (IG_WALL_ENVELOPE + 10);
+        assert_eq(3, ig_poll_deadline() - time(), 'enveloppe murale dépassée');
+    } finally {
+        if ($requete === null) {
+            unset($_SERVER['REQUEST_TIME_FLOAT']);
+        } else {
+            $_SERVER['REQUEST_TIME_FLOAT'] = $requete;
+        }
+    }
+});
+
+test('l\'enveloppe murale ne dépend pas de max_execution_time', function () {
+    // max_execution_time ne compte que le temps script : ni sleep() ni
+    // l'attente réseau n'y entrent. En déduire une enveloppe murale amputait
+    // l'attente sans rien protéger.
+    $maxInitial = ini_get('max_execution_time');
+    $requete    = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
+    try {
         $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 20;
-        assert_eq(5, ig_poll_deadline() - time(), '20 s déjà consommées sur 30');
-
-        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 29;
-        assert_eq(3, ig_poll_deadline() - time(), 'plancher quand il ne reste presque rien');
-
-        // Sans limite (CLI, ou réglage désactivé), on garde le budget nominal.
+        ini_set('max_execution_time', '30');
+        $avec = ig_poll_deadline() - time();
         ini_set('max_execution_time', '0');
-        assert_eq(IG_POLL_BUDGET, ig_poll_deadline() - time(), 'aucune limite d\'exécution');
+        $sans = ig_poll_deadline() - time();
+        assert_eq($avec, $sans, 'la directive PHP ne doit plus influer sur l\'attente');
+        assert_eq(IG_POLL_BUDGET, $avec, '20 s de préparation laissent l\'attente entière');
     } finally {
         ini_set('max_execution_time', (string) $maxInitial);
         if ($requete === null) {
@@ -927,10 +949,10 @@ test('un carrousel n\'enchaîne pas deux budgets d\'attente complets', function 
     // Les enfants et le parent puisent dans la même enveloppe : deux budgets
     // enchaînés dépasseraient le temps d'exécution alloué au script. On réduit
     // ici le budget à son plancher pour mesurer sans attendre 25 s.
-    $maxInitial = ini_get('max_execution_time');
-    $requete    = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
-    ini_set('max_execution_time', '30');
-    $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 29; // → plancher de 3 s
+    $requete = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
+    // On se place au bord de l'enveloppe murale pour obtenir le plancher de
+    // 3 s, et mesurer sans attendre 25 s.
+    $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - (IG_WALL_ENVELOPE + 5);
 
     http_fake_fn(function ($m, $u, $h, $b) {
         $p = http_fake_params($u, $b);
@@ -960,7 +982,6 @@ test('un carrousel n\'enchaîne pas deux budgets d\'attente complets', function 
         assert_contains('children = [', $e->getMessage());
     } finally {
         http_real();
-        ini_set('max_execution_time', (string) $maxInitial);
         if ($requete === null) {
             unset($_SERVER['REQUEST_TIME_FLOAT']);
         } else {

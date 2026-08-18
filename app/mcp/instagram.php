@@ -44,6 +44,13 @@ const IG_SCOPES = ['instagram_business_basic', 'instagram_business_content_publi
 /** Budget d'attente du traitement d'un conteneur (s) — un mutualisé coupe vite. */
 const IG_POLL_BUDGET = 25;
 
+/**
+ * Durée totale, en temps mural, qu'un appel s'autorise avant de rendre la main.
+ * Choisie sous le délai d'attente par défaut d'Apache et de nginx (60 s), qui
+ * coupent la connexion sans que PHP puisse répondre.
+ */
+const IG_WALL_ENVELOPE = 55;
+
 /** Bornes d'un carrousel. */
 const IG_CAROUSEL_MIN = 2;
 const IG_CAROUSEL_MAX = 10;
@@ -614,13 +621,6 @@ function ig_tool_publish_carousel(array $settings, array $args): array
             $children[] = ig_container_create($settings, $params);
         }
 
-        // Chaque enfant doit être prêt : créer le parent trop tôt échoue.
-        // Le budget ne démarre qu'ici, une fois les conversions et les envois
-        // terminés : sinon il serait déjà épuisé avant la première attente.
-        $deadline = ig_poll_deadline();
-        foreach ($children as $childId) {
-            ig_container_await($settings, $childId, $deadline, $children, true);
-        }
     }
 
     // Les bornes se contrôlent avant toute attente : proposer de reprendre un
@@ -630,13 +630,15 @@ function ig_tool_publish_carousel(array $settings, array $args): array
             . IG_CAROUSEL_MAX . ' images ; ' . count($children) . ' conteneur(s) ont été fournis dans « children ».');
     }
 
-    // Sur une reprise, les enfants viennent de l'appelant : rien ne garantit
-    // qu'Instagram a fini de les traiter, et créer le parent trop tôt échoue.
-    if (($args['children'] ?? []) !== []) {
-        $deadline = ig_poll_deadline();
-        foreach ($children as $childId) {
-            ig_container_await($settings, $childId, $deadline, $children, true);
-        }
+    // Une seule échéance pour tout ce qui suit, posée une fois la préparation
+    // terminée : la compter plus tôt l'aurait épuisée avant la première
+    // attente, et en ouvrir une seconde pour le parent doublerait l'enveloppe.
+    $deadline = ig_poll_deadline();
+
+    // Chaque enfant doit être prêt avant de créer le parent — y compris sur une
+    // reprise, où ils viennent de l'appelant sans garantie qu'Instagram ait fini.
+    foreach ($children as $childId) {
+        ig_container_await($settings, $childId, $deadline, $children, true);
     }
 
     $params = ['media_type' => 'CAROUSEL', 'children' => implode(',', $children)];
@@ -646,9 +648,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     ig_apply_common_params($params, $args);
 
     $parentId = ig_container_create($settings, $params);
-    // Le parent puise dans la même enveloppe que les enfants : deux budgets
-    // enchaînés dépasseraient le temps d'exécution alloué au script.
-    ig_container_await($settings, $parentId, $deadline ?? ig_poll_deadline(), [$parentId]);
+    ig_container_await($settings, $parentId, $deadline, [$parentId]);
     $result = ig_publish($settings, $parentId);
 
     ig_sweep_media();
@@ -660,26 +660,22 @@ function ig_tool_publish_carousel(array $settings, array $args): array
 /**
  * Échéance des attentes d'un appel, en secondes depuis l'époque.
  *
- * Bornée par le temps d'exécution que l'hébergement laisse au script : être
- * tué en pleine attente priverait l'appelant de la réponse qui lui dirait
- * comment reprendre. On garde une marge pour l'envoi de la réponse.
+ * Le risque à couvrir est la minuterie du serveur web, du gestionnaire FastCGI
+ * ou du proxy en amont : elle compte en temps **mural** et coupe la connexion,
+ * privant l'appelant de la réponse qui lui dirait comment reprendre. D'où une
+ * enveloppe murale explicite, sous le défaut habituel de 60 s.
  *
- * Le calcul compare volontairement du temps mural au plafond de
- * max_execution_time, qui sous Linux ne compte pas les appels bloquants comme
- * sleep(). La borne est donc prudente, et c'est voulu : ce n'est pas PHP seul
- * qui interrompt une requête trop longue, mais aussi le serveur web, le
- * gestionnaire FastCGI ou le proxy en amont — et ceux-là comptent bien en
- * temps mural. Trop attendre coûte la réponse ; attendre trop peu ne coûte
- * qu'une reprise, dont le message donne la marche à suivre.
+ * `max_execution_time` ne convient pas pour cela : sous Linux il ne compte que
+ * le temps script, et ni `sleep()` ni l'attente réseau n'y entrent. Cet outil
+ * consomme environ un dixième de seconde de processeur — PHP ne l'interrompra
+ * donc jamais pour dépassement, et en déduire une enveloppe murale revenait à
+ * amputer l'attente sans rien protéger. On laisse ce garde-fou en place : il
+ * ne coûte rien ici, et protège toujours d'une boucle qui s'emballerait.
  */
 function ig_poll_deadline(): int
 {
-    $max = (int) ini_get('max_execution_time');
-    if ($max <= 0) {
-        return time() + IG_POLL_BUDGET; // pas de limite (CLI, ou réglage désactivé)
-    }
-    $reste = $max - (int) (microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true)));
-    return time() + max(3, min(IG_POLL_BUDGET, $reste - 5));
+    $depuis = microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true));
+    return time() + max(3, min(IG_POLL_BUDGET, (int) (IG_WALL_ENVELOPE - $depuis)));
 }
 
 function ig_tool_publish_container(array $settings, array $args): array
