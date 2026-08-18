@@ -188,3 +188,14 @@ test('un type de MCP inconnu est refusé à la création', function () {
     assert_throws(fn () => config_create((int) $user['id'], 'tiktok', 'X'),
         'Type de MCP inconnu', InvalidArgumentException::class);
 });
+
+test('la page d\'accueil énumère les connecteurs sans les coder en dur', function () {
+    $list = ui_type_list();
+    assert_contains('LinkedIn', $list);
+    assert_contains('Instagram', $list);
+    assert_contains(' ou ', $list);
+    // Le texte doit suivre le catalogue : tout type ajouté doit y apparaître.
+    foreach (mcp_types() as $type) {
+        assert_contains($type['label'], $list, 'type absent de la page d\'accueil : ' . $type['label']);
+    }
+});

@@ -207,6 +207,20 @@ function ui_type_card(string $key, array $type, int $delay = 0): void
         . '</form></div>';
 }
 
+/**
+ * Énumère les types de connecteurs proposés (« LinkedIn ou Instagram »).
+ * Évite d'avoir à retoucher les textes de la page d'accueil à chaque ajout.
+ */
+function ui_type_list(string $conjunction = 'ou'): string
+{
+    $labels = array_column(mcp_types(), 'label');
+    if (count($labels) <= 1) {
+        return (string) ($labels[0] ?? '');
+    }
+    $last = array_pop($labels);
+    return implode(', ', $labels) . ' ' . $conjunction . ' ' . $last;
+}
+
 /** Icônes SVG inline (trait 1.6, style « SF Symbols »). */
 function ui_icon(string $name): string
 {
