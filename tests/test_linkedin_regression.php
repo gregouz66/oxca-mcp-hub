@@ -199,3 +199,21 @@ test('la page d\'accueil énumère les connecteurs sans les coder en dur', funct
         assert_contains($type['label'], $list, 'type absent de la page d\'accueil : ' . $type['label']);
     }
 });
+
+test('l\'adresse validée est épinglée pour l\'appel, contre le rebinding DNS', function () {
+    // Sans épinglage, cURL refait sa propre résolution après la nôtre : un
+    // serveur DNS hostile répond une adresse publique la première fois et une
+    // adresse interne la seconde, et le contrôle ne sert plus à rien.
+    $epingle = http_guard_public_url('https://example.com/fichier.pdf', 'document_url');
+    assert_true($epingle !== [], 'la validation doit rendre de quoi épingler l\'adresse');
+    foreach ($epingle as $entree) {
+        // Format attendu par CURLOPT_RESOLVE : HÔTE:PORT:ADRESSE
+        assert_true((bool) preg_match('/^example\.com:443:.+$/', $entree), 'entrée inattendue : ' . $entree);
+    }
+
+    // Le port suit le schéma, et une IP littérale reste contrôlée sans DNS.
+    $enClair = http_guard_public_url('http://example.com:8080/x.pdf', 'document_url');
+    assert_contains('example.com:8080:', implode(' ', $enClair));
+    assert_eq([], http_guard_public_url('https://example.com/x.jpg', 'image_url', false),
+        'sans résolution DNS, rien à épingler');
+});

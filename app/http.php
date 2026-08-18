@@ -93,7 +93,7 @@ function http_proxy_configured(): bool
  * dépendent pas du DNS : une résolution indisponible ne doit pas faire échouer
  * une URL parfaitement valide.
  */
-function http_guard_public_url(string $url, string $label, bool $resolveDns = true): void
+function http_guard_public_url(string $url, string $label, bool $resolveDns = true): array
 {
     $parts  = parse_url($url) ?: [];
     $scheme = strtolower((string) ($parts['scheme'] ?? ''));
@@ -107,11 +107,20 @@ function http_guard_public_url(string $url, string $label, bool $resolveDns = tr
         if (filter_var($literal, FILTER_VALIDATE_IP)) {
             http_guard_public_ip($literal, $label);
         }
-        return;
+        return [];
     }
-    foreach (http_resolve_host($host, $label) as $ip) {
+
+    $ips = http_resolve_host($host, $label);
+    foreach ($ips as $ip) {
         http_guard_public_ip($ip, $label);
     }
+
+    // Épinglage : sans cela, cURL refait sa propre résolution après la nôtre.
+    // Un serveur DNS hostile n'a qu'à répondre une adresse publique la première
+    // fois et une adresse interne la seconde — le contrôle ne sert plus à rien.
+    // CURLOPT_RESOLVE fige la correspondance nom → adresse pour cet appel.
+    $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    return array_map(fn ($ip) => trim($host, '[]') . ':' . $port . ':' . $ip, $ips);
 }
 
 /** Adresses IP d'un hôte (qui peut déjà être une IP littérale). */
@@ -152,7 +161,7 @@ function http_download_limited(
     string $sizeMessage,
     ?array &$info = null
 ): string {
-    http_guard_public_url($url, $label);
+    $epingle = http_guard_public_url($url, $label);
 
     // Le contrôle par saut n'existe qu'à partir de PHP 8.2 / libcurl 7.80, et
     // il est inopérant derrière un proxy sortant. Sans lui, une redirection
@@ -162,6 +171,9 @@ function http_download_limited(
 
     $abort = '';
     $ch    = curl_init($url);
+    if ($epingle !== []) {
+        curl_setopt($ch, CURLOPT_RESOLVE, $epingle);
+    }
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER  => true,
         CURLOPT_TIMEOUT         => $timeout,

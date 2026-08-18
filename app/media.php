@@ -18,6 +18,17 @@
 /** Durée de vie d'un média mis en scène (s). Alignée sur la vie d'un conteneur. */
 const MEDIA_TTL = 86400;
 
+/**
+ * Taille totale que le dépôt ne dépasse pas.
+ *
+ * Les médias ne sont pas supprimés après publication — Meta ne s'engage que
+ * sur leur disponibilité « au moment de la tentative » et ne documente rien
+ * au-delà. Sans plafond, un connecteur très actif, ou le détenteur d'un token
+ * partagé, remplirait le disque de l'hébergement. Au-delà, les dépôts les plus
+ * anciens cèdent la place.
+ */
+const MEDIA_MAX_TOTAL_BYTES = 314572800; // 300 Mo
+
 /** Répertoire de dépôt, créé au besoin. */
 function media_dir(): string
 {
@@ -90,9 +101,15 @@ function media_put(string $bytes, string $mime): array
         'created_at' => time(),
         'expires_at' => time() + MEDIA_TTL,
     ];
-    if (@file_put_contents(media_path($key, 'json'), json_encode($meta), LOCK_EX) === false) {
+    $json    = (string) json_encode($meta);
+    $written = @file_put_contents(media_path($key, 'json'), $json, LOCK_EX);
+    // Même précaution que pour les octets : un disque plein écrit partiellement.
+    // Des métadonnées tronquées rendraient le dépôt illisible, donc l'URL
+    // remise à Instagram répondrait 404.
+    if ($written === false || $written !== strlen($json)) {
+        @unlink(media_path($key, 'json'));
         @unlink(media_path($key, 'bin'));
-        throw new RuntimeException('Écriture impossible dans storage/media : vérifiez les droits du répertoire.');
+        throw new RuntimeException('Écriture impossible dans storage/media : le disque du serveur est probablement plein.');
     }
     return ['key' => $key, 'url' => base_url('/media.php?k=' . $key)];
 }
@@ -108,24 +125,52 @@ function media_forget(string $key): void
 }
 
 /**
- * Purge les médias expirés. Appelée à chaque dépôt et à chaque lecture :
- * aucune tâche planifiée n'est nécessaire, ce qui compte sur un mutualisé.
+ * Purge les médias expirés, puis les plus anciens si le dépôt déborde.
+ * Appelée à chaque dépôt et à chaque lecture : aucune tâche planifiée n'est
+ * nécessaire, ce qui compte sur un mutualisé.
+ *
+ * $plafond permet d'imposer une borne autre que celle par défaut ; les tests
+ * s'en servent pour éprouver l'éviction sans écrire 300 Mo.
  */
-function media_gc(): void
+function media_gc(?int $plafond = null): void
 {
+    $plafond  = $plafond ?? MEDIA_MAX_TOTAL_BYTES;
+    $restants = [];
+    $total    = 0;
+
     foreach (@glob(media_dir() . '/*.json') ?: [] as $json) {
-        $meta = json_decode((string) @file_get_contents($json), true);
-        if (is_array($meta)) {
-            if ((int) ($meta['expires_at'] ?? 0) >= time()) {
-                continue;
-            }
-        } elseif ((int) @filemtime($json) > time() - MEDIA_TTL) {
+        $meta    = json_decode((string) @file_get_contents($json), true);
+        $expire  = is_array($meta)
+            ? (int) ($meta['expires_at'] ?? 0) < time()
             // Métadonnées illisibles : on se replie sur la date du fichier
             // plutôt que de supprimer un dépôt peut-être encore utile.
+            : (int) @filemtime($json) <= time() - MEDIA_TTL;
+
+        $bin = substr($json, 0, -5) . '.bin';
+        if ($expire) {
+            @unlink($json);
+            @unlink($bin);
             continue;
         }
-        @unlink($json);
-        @unlink(substr($json, 0, -5) . '.bin');
+        $taille     = (int) @filesize($bin);
+        $total     += $taille;
+        $restants[] = ['json' => $json, 'bin' => $bin, 'taille' => $taille,
+            'date' => is_array($meta) ? (int) ($meta['created_at'] ?? 0) : (int) @filemtime($json)];
+    }
+
+    if ($total <= $plafond) {
+        return;
+    }
+    // Le dépôt déborde : les plus anciens cèdent la place. Ils ont déjà servi
+    // à une publication, ou leur conteneur est en passe d'expirer.
+    usort($restants, fn ($a, $b) => $a['date'] <=> $b['date']);
+    foreach ($restants as $entree) {
+        if ($total <= $plafond) {
+            return;
+        }
+        @unlink($entree['json']);
+        @unlink($entree['bin']);
+        $total -= $entree['taille'];
     }
 }
 

@@ -40,6 +40,14 @@ if ($meta === null || $size === false) {
     media_serve_error(404, 'Média introuvable ou expiré.');
 }
 
+// Le fichier est ouvert AVANT d'annoncer sa taille : illisible (droits
+// durcis, restauration de sauvegarde) ou disparu entre-temps, il produirait
+// sinon une réponse 200 promettant N octets pour un corps vide.
+$flux = $method === 'HEAD' ? true : @fopen(media_path($key, 'bin'), 'rb');
+if ($flux === false) {
+    media_serve_error(404, 'Média introuvable ou expiré.');
+}
+
 header('Content-Type: ' . $meta['mime']);
 header('Content-Length: ' . $size);
 header('Content-Disposition: inline');
@@ -48,7 +56,8 @@ header('Cache-Control: private, max-age=600');
 if ($method === 'HEAD') {
     exit;
 }
-readfile(media_path($key, 'bin'));
+fpassthru($flux);
+fclose($flux);
 exit;
 
 /** Réponse d'erreur en texte brut, sans divulguer l'état du dépôt. */

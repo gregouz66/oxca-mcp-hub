@@ -364,6 +364,13 @@ Les images sont fournies soit par `image_url` (URL publique directe), soit par
 `image_base64`. Avec une URL, le connecteur ne ré-héberge l'image que si elle
 n'est pas conforme (`stage: "auto"`, par défaut).
 
+> **Occupation disque.** Les images déposées ne sont pas supprimées dès la
+> publication : Meta ne s'engage que sur leur disponibilité « au moment de la
+> tentative » et ne documente rien au-delà. Elles expirent d'elles-mêmes au
+> bout de 24 h, et le dépôt est plafonné à **300 Mo** — au-delà, les plus
+> anciennes cèdent la place. Aucune tâche planifiée n'est nécessaire : le
+> ménage se fait à chaque dépôt et à chaque lecture.
+
 > **Dimensions des images.** Une image est refusée au-delà de
 > **24 mégapixels**, quel que soit le poids du fichier. Ce n'est pas une
 > coquetterie : un JPEG uni de 8 Ko peut couvrir 30000 × 2 pixels et, une fois

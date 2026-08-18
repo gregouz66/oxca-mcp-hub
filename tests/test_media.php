@@ -98,3 +98,62 @@ test('un dépôt sans métadonnées lisibles finit par être purgé', function (
     assert_false(is_file(media_path($put['key'], 'bin')), 'les octets orphelins doivent être purgés');
     assert_false(is_file(media_path($put['key'], 'json')));
 });
+
+test('le dépôt est borné en taille : les plus anciens cèdent la place', function () {
+    // Les médias ne sont pas supprimés après publication : sans plafond, un
+    // connecteur actif — ou le détenteur d'un token partagé — remplirait le
+    // disque de l'hébergement.
+    // Le dépôt est partagé par toute la suite : on part d'un état vide pour
+    // que l'éviction soit mesurable.
+    media_gc(0);
+    assert_eq(0, count(glob(media_dir() . '/*.bin') ?: []), 'le dépôt doit être vide au départ');
+
+    $bloc    = str_repeat('x', 200000); // 200 Ko
+    $deposes = [];
+    for ($i = 0; $i < 5; $i++) {
+        $put  = media_put($bloc, 'image/jpeg');
+        $meta = json_decode((string) file_get_contents(media_path($put['key'], 'json')), true);
+        $meta['created_at'] = time() - (5 - $i) * 3600; // le premier est le plus ancien
+        file_put_contents(media_path($put['key'], 'json'), json_encode($meta));
+        $deposes[] = $put['key'];
+    }
+    foreach ($deposes as $i => $key) {
+        assert_true(media_meta($key) !== null, "dépôt $i absent avant l'éviction");
+    }
+
+    // Plafond ramené à 500 Ko : deux dépôts et demi tiennent, les plus anciens
+    // doivent céder la place.
+    media_gc(500000);
+
+    assert_eq(null, media_meta($deposes[0]), 'le plus ancien devait être évincé');
+    assert_eq(null, media_meta($deposes[1]), 'le deuxième plus ancien devait être évincé');
+    assert_true(media_meta($deposes[4]) !== null, 'le plus récent devait être conservé');
+    assert_true(media_meta($deposes[3]) !== null, 'l\'avant-dernier devait être conservé');
+
+    $reste = 0;
+    foreach ($deposes as $key) {
+        $reste += (int) @filesize(media_path($key, 'bin'));
+    }
+    assert_true($reste <= 500000, 'le dépôt doit repasser sous le plafond, obtenu ' . $reste);
+
+    foreach ($deposes as $key) {
+        media_forget($key);
+    }
+});
+
+test('des métadonnées tronquées ne produisent jamais d\'URL morte', function () {
+    // Sur disque plein, file_put_contents écrit partiellement : un dépôt dont
+    // les métadonnées sont tronquées rendrait une URL qui répond 404 à
+    // Instagram. media_put() doit échouer et tout nettoyer.
+    $source = file_get_contents(dirname(__DIR__) . '/app/media.php');
+    // Les deux écritures doivent être contrôlées de la même façon.
+    assert_eq(2, substr_count($source, '$written !== strlen('),
+        'les octets ET les métadonnées doivent vérifier le nombre d\'octets écrits');
+
+    // Contrôle du comportement nominal : les deux fichiers sont cohérents.
+    $put  = media_put('des octets', 'image/jpeg');
+    $meta = media_meta($put['key']);
+    assert_eq(strlen('des octets'), $meta['size']);
+    assert_eq((int) filesize(media_path($put['key'], 'bin')), $meta['size']);
+    media_forget($put['key']);
+});

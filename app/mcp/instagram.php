@@ -1029,8 +1029,9 @@ function ig_url_usable_as_is(array $info, array $transfer, string $url): bool
 {
     // À défaut d'information sur les redirections, on ré-héberge : mieux vaut
     // un dépôt superflu qu'une publication qui échoue chez Instagram.
-    // MUTATION: terme redirections supprime
-
+    if (!isset($transfer['redirects']) || (int) $transfer['redirects'] !== 0) {
+        return false;
+    }
     $spec = ig_image_spec();
     return $info['mime'] === $spec['mime']
         && $info['size'] <= $spec['max_bytes']
