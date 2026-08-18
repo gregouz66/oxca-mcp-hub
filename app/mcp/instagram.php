@@ -522,7 +522,7 @@ function ig_tool_publish_image(array $settings, array $args): array
         $params['caption'] = $caption;
     }
     ig_apply_common_params($params, $args);
-    $altText = trim((string) ($args['alt_text'] ?? ''));
+    $altText = ig_arg_text($args['alt_text'] ?? null, 'alt_text');
     if ($altText !== '') {
         $params['alt_text'] = ig_check_alt_text($altText);
     }
@@ -549,7 +549,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     // Reprise : des conteneurs enfants déjà prêts peuvent être réutilisés.
     $children = [];
     foreach ((array) ($args['children'] ?? []) as $childId) {
-        $childId = trim((string) $childId);
+        $childId = ig_arg_text($childId, 'children');
         if ($childId !== '') {
             $children[] = $childId;
         }
@@ -576,7 +576,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
                 throw new McpToolError('L\'élément ' . ($i + 1) . ' du carrousel n\'est pas un objet.');
             }
             $label   = 'image ' . ($i + 1);
-            $altText = trim((string) ($item['alt_text'] ?? ''));
+            $altText = ig_arg_text($item['alt_text'] ?? null, 'alt_text');
             $media   = ig_resolve_image($settings, $item, $label, $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
 
             // L'image est désormais sur le disque : rien ne justifie de garder
@@ -624,7 +624,7 @@ function ig_tool_publish_container(array $settings, array $args): array
 {
     ig_require_connection($settings);
 
-    $creationId = trim((string) ($args['creation_id'] ?? ''));
+    $creationId = ig_arg_text($args['creation_id'] ?? null, 'creation_id');
     if ($creationId === '') {
         throw new McpToolError('Argument « creation_id » manquant : indiquez le conteneur à publier.');
     }
@@ -830,7 +830,7 @@ function ig_fetch_permalink(array $settings, string $mediaId): string
 /** Paramètres communs au conteneur d'une image seule et au parent d'un carrousel. */
 function ig_apply_common_params(array &$params, array $args): void
 {
-    $locationId = trim((string) ($args['location_id'] ?? ''));
+    $locationId = ig_arg_text($args['location_id'] ?? null, 'location_id');
     if ($locationId !== '') {
         $params['location_id'] = $locationId;
     }
@@ -839,7 +839,7 @@ function ig_apply_common_params(array &$params, array $args): void
     }
 
     $collaborators = array_values(array_filter(array_map(
-        static fn ($c) => ltrim(trim((string) $c), '@'),
+        static fn ($c) => ltrim(ig_arg_text($c, 'collaborators'), '@'),
         (array) ($args['collaborators'] ?? [])
     ), static fn ($c) => $c !== ''));
     if ($collaborators !== []) {
@@ -894,8 +894,8 @@ function ig_build_user_tags(array $args): ?string
  */
 function ig_resolve_image(array $settings, array $args, string $label, string $fit, string $stage): array
 {
-    $url    = trim((string) ($args['image_url'] ?? ''));
-    $base64 = trim((string) ($args['image_base64'] ?? ''));
+    $url    = ig_arg_text($args['image_url'] ?? null, 'image_url');
+    $base64 = ig_arg_text($args['image_base64'] ?? null, 'image_base64');
 
     if ($url !== '' && $base64 !== '') {
         throw new McpToolError("Pour « $label », fournissez « image_url » OU « image_base64 », pas les deux.");
@@ -1012,10 +1012,29 @@ function ig_check_total_payload(array $items): void
     }
 }
 
+/**
+ * Lit un argument censé être du texte.
+ *
+ * Un client MCP peut envoyer n'importe quelle forme JSON. Sans ce contrôle,
+ * un tableau passé en légende deviendrait la chaîne « Array » — et serait
+ * publié tel quel sur Instagram.
+ */
+function ig_arg_text(mixed $value, string $key): string
+{
+    if ($value === null) {
+        return '';
+    }
+    if (is_array($value) || is_object($value) || is_bool($value)) {
+        throw new McpToolError("L'argument « $key » doit être du texte, pas "
+            . (is_bool($value) ? 'un booléen' : 'une liste ou un objet') . '.');
+    }
+    return trim((string) $value);
+}
+
 /** Contrôle la légende et la retourne nettoyée. */
 function ig_check_caption(mixed $caption): string
 {
-    $caption = trim((string) $caption);
+    $caption = ig_arg_text($caption, 'caption');
     if ($caption === '') {
         return '';
     }

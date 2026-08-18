@@ -613,3 +613,72 @@ test('un carrousel de dix photos ordinaires reste dans le budget mémoire', func
     assert_true($consomme < 64, 'mémoire consommée : ' . round($consomme, 1) . ' Mo');
     http_real();
 });
+
+test('un argument texte reçu sous forme de liste est refusé, pas converti', function () {
+    // Sans contrôle, (string) ["a"] vaut « Array » : la légende publiée sur
+    // Instagram serait littéralement « Array ».
+    assert_throws(fn () => ig_check_caption(['une', 'liste']), 'doit être du texte', McpToolError::class);
+    assert_throws(fn () => ig_arg_text(['x'], 'alt_text'), 'alt_text', McpToolError::class);
+    assert_throws(fn () => ig_arg_text(true, 'location_id'), 'booléen', McpToolError::class);
+
+    // Les formes légitimes passent, y compris un nombre.
+    assert_eq('', ig_arg_text(null, 'caption'));
+    assert_eq('123', ig_arg_text(123, 'location_id'));
+    assert_eq('bonjour', ig_arg_text('  bonjour  ', 'caption'));
+});
+
+test('aucun argument hostile ne provoque de plantage ni d\'appel détourné', function () {
+    [$config] = fixture_config('instagram', fixture_ig_settings());
+    $config = config_get((int) $config['id']);
+    http_fake_fn(function ($m, $u) {
+        if (str_contains($u, 'media_publish')) {
+            return [200, [], ['id' => 'M']];
+        }
+        if ($m === 'POST' && str_contains($u, '/media')) {
+            return [200, [], ['id' => 'C']];
+        }
+        return [200, [], ['status_code' => 'FINISHED', 'permalink' => '', 'data' => []]];
+    });
+
+    $jpeg = base64_encode(fixture_jpeg(1080, 1080));
+    $hostiles = [
+        ['items' => 'coucou'], ['items' => []], ['items' => [null, null]], ['items' => [42, 43]],
+        ['children' => 'C1'], ['children' => [['x' => 1]]], ['children' => ['', '  ']],
+        ['image_base64' => $jpeg, 'caption' => ['a']],
+        ['image_base64' => $jpeg, 'alt_text' => ['x']],
+        ['image_base64' => $jpeg, 'user_tags' => 'ami'],
+        ['image_base64' => $jpeg, 'user_tags' => [null]],
+        ['image_base64' => $jpeg, 'collaborators' => [['a']]],
+        ['image_base64' => $jpeg, 'fit' => 'detruire'],
+        ['image_base64' => $jpeg, 'stage' => '../..'],
+        ['image_base64' => $jpeg, 'location_id' => ['1']],
+        ['limit' => -5], ['limit' => 99999], ['limit' => 'beaucoup'],
+        ['creation_id' => ''], ['creation_id' => '../../me?fields=x&access_token=vole'],
+        ['creation_id' => ['x']],
+        ['image_base64' => '!!!pas du base64!!!'],
+        ['image_base64' => base64_encode('bonjour')],
+        ['image_url' => '   '], ['image_url' => 'javascript:alert(1)'],
+        ['image_url' => 'data:image/jpeg;base64,AAAA'],
+    ];
+    $tools = ['instagram_publish_image', 'instagram_publish_carousel',
+        'instagram_publish_container', 'instagram_list_media'];
+
+    foreach ($tools as $tool) {
+        foreach ($hostiles as $i => $args) {
+            try {
+                instagram_call($config, $tool, $args);
+            } catch (McpToolError | McpError $e) {
+                // Une erreur métier explicite est le comportement attendu.
+            } catch (Throwable $e) {
+                throw new RuntimeException("$tool, cas $i : " . get_class($e) . ' — ' . $e->getMessage());
+            }
+        }
+    }
+
+    // Aucune injection ne doit avoir fabriqué une URL détournée.
+    foreach (http_calls() as $call) {
+        assert_not_contains('access_token=vole', $call['url'], 'injection dans l\'URL');
+        assert_not_contains('/../', $call['url'], 'traversée de chemin dans l\'URL');
+    }
+    http_real();
+});
