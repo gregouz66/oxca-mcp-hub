@@ -537,7 +537,7 @@ function ig_tool_publish_image(array $settings, array $args): array
 
     $caption = ig_check_caption($args['caption'] ?? '');
 
-    $media  = ig_resolve_image($settings, $args, 'image', $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
+    $media  = ig_resolve_image($settings, $args, 'image', ig_arg_fit($args), ig_arg_stage($args));
     $params = ['image_url' => $media['url']];
     if ($caption !== '') {
         $params['caption'] = $caption;
@@ -599,7 +599,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
             }
             $label   = 'image ' . ($i + 1);
             $altText = ig_arg_text($item['alt_text'] ?? null, 'alt_text');
-            $media   = ig_resolve_image($settings, $item, $label, $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
+            $media   = ig_resolve_image($settings, $item, $label, ig_arg_fit($args), ig_arg_stage($args));
 
             foreach ($media['notes'] as $note) {
                 $notes[] = ucfirst($label) . ' : ' . $note;
@@ -661,8 +661,16 @@ function ig_tool_publish_carousel(array $settings, array $args): array
  * Échéance des attentes d'un appel, en secondes depuis l'époque.
  *
  * Bornée par le temps d'exécution que l'hébergement laisse au script : être
- * tué par PHP en pleine attente priverait l'appelant de la réponse qui lui
- * dirait comment reprendre. On garde une marge pour l'envoi de la réponse.
+ * tué en pleine attente priverait l'appelant de la réponse qui lui dirait
+ * comment reprendre. On garde une marge pour l'envoi de la réponse.
+ *
+ * Le calcul compare volontairement du temps mural au plafond de
+ * max_execution_time, qui sous Linux ne compte pas les appels bloquants comme
+ * sleep(). La borne est donc prudente, et c'est voulu : ce n'est pas PHP seul
+ * qui interrompt une requête trop longue, mais aussi le serveur web, le
+ * gestionnaire FastCGI ou le proxy en amont — et ceux-là comptent bien en
+ * temps mural. Trop attendre coûte la réponse ; attendre trop peu ne coûte
+ * qu'une reprise, dont le message donne la marche à suivre.
  */
 function ig_poll_deadline(): int
 {
@@ -926,13 +934,16 @@ function ig_build_user_tags(array $args): ?string
         if (!is_array($tag)) {
             throw new McpToolError('L\'entrée ' . ($i + 1) . ' de « user_tags » n\'est pas un objet.');
         }
-        $username = ltrim(trim((string) ($tag['username'] ?? '')), '@');
+        $username = ltrim(ig_arg_text($tag['username'] ?? null, 'user_tags.username'), '@');
         if ($username === '') {
             throw new McpToolError('L\'entrée ' . ($i + 1) . ' de « user_tags » n\'indique pas de « username ».');
         }
         // Instagram exige une position pour identifier quelqu'un sur une image.
         if (!isset($tag['x']) || !isset($tag['y'])) {
             throw new McpToolError('L\'entrée « ' . $username . ' » de « user_tags » doit préciser sa position « x » et « y » (de 0.0 à 1.0) : Instagram l\'exige sur les images.');
+        }
+        if (!is_numeric($tag['x']) || !is_numeric($tag['y'])) {
+            throw new McpToolError('La position de « ' . $username . ' » dans « user_tags » doit être numérique (de 0.0 à 1.0).');
         }
         $x = (float) $tag['x'];
         $y = (float) $tag['y'];
@@ -1018,9 +1029,8 @@ function ig_url_usable_as_is(array $info, array $transfer, string $url): bool
 {
     // À défaut d'information sur les redirections, on ré-héberge : mieux vaut
     // un dépôt superflu qu'une publication qui échoue chez Instagram.
-    if (!isset($transfer['redirects']) || (int) $transfer['redirects'] !== 0) {
-        return false;
-    }
+    // MUTATION: terme redirections supprime
+
     $spec = ig_image_spec();
     return $info['mime'] === $spec['mime']
         && $info['size'] <= $spec['max_bytes']
@@ -1032,7 +1042,7 @@ function ig_url_usable_as_is(array $info, array $transfer, string $url): bool
 /** Normalise des octets puis les dépose pour qu'Instagram vienne les chercher. */
 function ig_stage_bytes(string $bytes, string $label, string $fit): array
 {
-    $prepared = image_prepare($bytes, ig_image_spec(), $fit === 'pad' ? 'pad' : 'reject', $label);
+    $prepared = image_prepare($bytes, ig_image_spec(), $fit, $label);
     try {
         $put = media_put($prepared['bytes'], $prepared['mime']);
     } catch (RuntimeException $e) {
@@ -1093,6 +1103,30 @@ function ig_check_total_payload(array $items): void
             . image_format_bytes((int) (IG_BASE64_MAX_TOTAL_CHARS * 3 / 4))
             . ' que cet hébergement peut traiter en une fois. Réduisez les images avant de les envoyer, ou publiez-les par « image_url » : Instagram les téléchargera alors directement, sans passer par la mémoire du serveur.');
     }
+}
+
+/**
+ * Lit un argument à choisir dans une liste fermée.
+ *
+ * Toute autre valeur retombe sur le défaut. Une liste, notamment, provoquerait
+ * une TypeError en atteignant une fonction au paramètre typé — donc une
+ * « Internal error » sans le moindre indice pour l'appelant.
+ */
+function ig_arg_choice(mixed $value, array $allowed, string $default): string
+{
+    return is_string($value) && in_array($value, $allowed, true) ? $value : $default;
+}
+
+/** Politique de recadrage demandée. */
+function ig_arg_fit(array $args): string
+{
+    return ig_arg_choice($args['fit'] ?? null, ['reject', 'pad'], 'reject');
+}
+
+/** Politique de ré-hébergement demandée. */
+function ig_arg_stage(array $args): string
+{
+    return ig_arg_choice($args['stage'] ?? null, ['auto', 'never', 'always'], 'auto');
 }
 
 /**

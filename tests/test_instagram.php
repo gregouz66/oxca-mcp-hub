@@ -655,8 +655,16 @@ test('aucun argument hostile ne provoque de plantage ni d\'appel détourné', fu
         ['image_base64' => $jpeg, 'user_tags' => [null]],
         ['image_base64' => $jpeg, 'collaborators' => [['a']]],
         ['image_base64' => $jpeg, 'fit' => 'detruire'],
+        ['image_base64' => $jpeg, 'fit' => ['pad']],
+        ['image_base64' => $jpeg, 'fit' => true],
         ['image_base64' => $jpeg, 'stage' => '../..'],
+        ['image_base64' => $jpeg, 'stage' => ['auto']],
         ['image_base64' => $jpeg, 'location_id' => ['1']],
+        ['image_base64' => $jpeg, 'user_tags' => [['username' => ['a'], 'x' => 0.5, 'y' => 0.5]]],
+        ['image_base64' => $jpeg, 'user_tags' => [['username' => 'a', 'x' => ['0.5'], 'y' => 0.5]]],
+        ['image_base64' => $jpeg, 'user_tags' => [['username' => 'a', 'x' => 'gauche', 'y' => 'haut']]],
+        ['image_base64' => $jpeg, 'collaborators' => ['a', ['b']]],
+        ['items' => [['image_base64' => $jpeg, 'alt_text' => ['x']], ['image_base64' => $jpeg]]],
         ['limit' => -5], ['limit' => 99999], ['limit' => 'beaucoup'],
         ['creation_id' => ''], ['creation_id' => '../../me?fields=x&access_token=vole'],
         ['creation_id' => ['x']],
@@ -768,6 +776,36 @@ test('une URL qui redirige n\'est jamais transmise telle quelle', function () {
         'un rapport hors bornes doit être ré-hébergé');
     assert_false(ig_url_usable_as_is(image_inspect(fixture_jpeg(200, 200), 'image'), ['redirects' => 0], $url),
         'une image trop petite doit être ré-hébergée');
+});
+
+test('fit et stage inconnus retombent sur un défaut sûr, sans plantage', function () {
+    // Ces deux arguments atteignent des fonctions au paramètre typé : une
+    // liste y provoquerait une TypeError, convertie en « Internal error »
+    // sans le moindre indice pour l'appelant.
+    assert_eq('reject', ig_arg_fit([]));
+    assert_eq('reject', ig_arg_fit(['fit' => 'detruire']));
+    assert_eq('reject', ig_arg_fit(['fit' => ['pad']]));
+    assert_eq('reject', ig_arg_fit(['fit' => true]));
+    assert_eq('pad', ig_arg_fit(['fit' => 'pad']));
+
+    assert_eq('auto', ig_arg_stage([]));
+    assert_eq('auto', ig_arg_stage(['stage' => '../..']));
+    assert_eq('auto', ig_arg_stage(['stage' => ['never']]));
+    assert_eq('never', ig_arg_stage(['stage' => 'never']));
+    assert_eq('always', ig_arg_stage(['stage' => 'always']));
+});
+
+test('une position de tag non numérique est refusée', function () {
+    foreach ([['0.5'], 'gauche', true, null] as $x) {
+        assert_throws(
+            fn () => ig_build_user_tags(['user_tags' => [['username' => 'ami', 'x' => $x, 'y' => 0.5]]]),
+            '',
+            McpToolError::class
+        );
+    }
+    // Une chaîne numérique reste acceptable : les clients JSON en produisent.
+    $json = ig_build_user_tags(['user_tags' => [['username' => 'ami', 'x' => '0.5', 'y' => 0.25]]]);
+    assert_eq(0.5, json_decode($json, true)[0]['x']);
 });
 
 test('un booléen envoyé en texte n\'est pas pris pour vrai', function () {
