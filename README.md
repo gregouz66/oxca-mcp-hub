@@ -364,32 +364,17 @@ Les images sont fournies soit par `image_url` (URL publique directe), soit par
 `image_base64`. Avec une URL, le connecteur ne ré-héberge l'image que si elle
 n'est pas conforme (`stage: "auto"`, par défaut).
 
-> **Occupation disque.** Les images déposées ne sont pas supprimées dès la
-> publication : Meta ne s'engage que sur leur disponibilité « au moment de la
-> tentative » et ne documente rien au-delà. Elles expirent d'elles-mêmes au
-> bout de 24 h, et le dépôt est plafonné à **300 Mo** — au-delà, les plus
-> anciennes cèdent la place. Aucune tâche planifiée n'est nécessaire : le
-> ménage se fait à chaque dépôt et à chaque lecture.
+### Ce que l'hébergement impose
 
-> **Dimensions des images.** Une image est refusée au-delà de
-> **24 mégapixels**, quel que soit le poids du fichier. Ce n'est pas une
-> coquetterie : un JPEG uni de 8 Ko peut couvrir 30000 × 2 pixels et, une fois
-> complété par des marges, réclamer **1,8 Go de mémoire**. Cette mémoire est
-> allouée par GD, donc **hors du `memory_limit` de PHP**, qui ne la plafonne
-> pas : sans borne, le processus se ferait tuer par le système au lieu
-> d'échouer proprement. Comptez environ 4 Mo par mégapixel, le double pendant
-> un redimensionnement — soit ~230 Mo à la limite, mesurés. Un capteur haut de gamme
-> produit 24 Mpx : les photos d'appareils courants passent donc toutes.
+Instagram télécharge les images sur votre serveur : ces trois limites viennent
+donc de la machine, pas de l'API. Elles sont toutes mesurées, et chacune
+produit un message explicite plutôt qu'un échec obscur.
 
-> **Poids des envois en base64.** Décoder puis décompresser une image coûte
-> plusieurs fois sa taille en mémoire, et un mutualisé plafonne souvent à
-> 128 Mo. Le connecteur refuse donc, avec un message explicite, au-delà de
-> ~18 Mo par image et ~32 Mo pour un carrousel entier — plutôt que de laisser
-> PHP s'arrêter en cours de route et renvoyer une réponse tronquée. Un
-> carrousel de dix photos ordinaires consomme environ 18 Mo : la limite ne se
-> rencontre qu'avec des images non redimensionnées. Au-delà, passez par
-> `image_url` : Instagram télécharge alors directement, sans passer par la
-> mémoire du serveur.
+| Limite | Valeur | Pourquoi |
+|---|---|---|
+| Dimensions d'une image | **24 mégapixels** | Un JPEG de 8 Ko peut couvrir 30000 × 2 pixels et réclamer **1,8 Go** une fois complété par des marges. Cette mémoire est allouée par GD, donc **hors du `memory_limit` de PHP**, qui ne la plafonne pas : sans borne, le système tue le processus au lieu d'échouer proprement. Comptez ~4 Mo par mégapixel, le double pendant un redimensionnement — ~230 Mo à la limite. Un capteur haut de gamme produit 24 Mpx : les photos d'appareils courants passent toutes. |
+| Envoi en base64 | **~18 Mo** par image, **~32 Mo** par carrousel | Décoder une image coûte plusieurs fois sa taille, et un mutualisé plafonne souvent à 128 Mo. Un carrousel de dix photos ordinaires consomme ~18 Mo : la limite ne se rencontre qu'avec des images non redimensionnées. Au-delà, passez par `image_url` — Instagram télécharge alors directement, sans passer par la mémoire du serveur. |
+| Dépôt `storage/media` | **300 Mo**, 24 h | Les images ne sont pas supprimées dès la publication : Meta ne s'engage que sur leur disponibilité « au moment de la tentative » et ne documente rien au-delà. Elles expirent d'elles-mêmes, et au-delà du plafond les plus anciennes cèdent la place. Aucune tâche planifiée n'est nécessaire : le ménage se fait à chaque dépôt et à chaque lecture. |
 
 ### Publier un carrousel
 
