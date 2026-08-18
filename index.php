@@ -12,7 +12,7 @@ ui_top('Accueil', null, true);
 
 <div class="hero rise">
   <h1>Vos connecteurs MCP,<br>prêts pour Claude.</h1>
-  <p>Configurez des connecteurs pré-codés — LinkedIn pour commencer —,
+  <p>Configurez des connecteurs pré-codés — <?= e(ui_type_list()) ?> —,
      branchez-les à Claude Code en une commande, partagez-les à qui vous voulez.</p>
   <div class="hero-actions">
     <a class="btn btn-primary btn-lg" href="<?= e(base_url('/login.php')) ?>">Commencer</a>
@@ -43,7 +43,7 @@ ui_top('Accueil', null, true);
   <div class="step"><div><strong>Connectez-vous avec votre email</strong>
     <p>Un code à 6 chiffres et un lien magique arrivent dans votre boîte. Aucun compte à créer.</p></div></div>
   <div class="step"><div><strong>Créez un connecteur depuis le catalogue</strong>
-    <p>Choisissez LinkedIn, renseignez le minimum demandé, cliquez sur « Connecter ».</p></div></div>
+    <p>Choisissez <?= e(ui_type_list()) ?>, renseignez le minimum demandé, cliquez sur « Connecter ».</p></div></div>
   <div class="step"><div><strong>Branchez Claude Code</strong>
     <p>Copiez la commande fournie : votre connecteur devient un serveur MCP personnel, sécurisé par token.</p></div></div>
   <div class="step"><div><strong>Partagez si vous voulez</strong>

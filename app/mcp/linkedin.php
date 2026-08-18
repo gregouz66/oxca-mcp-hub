@@ -1010,124 +1010,18 @@ function li_document_check_size(int $bytes): void
 }
 
 /**
- * Télécharge un document depuis une URL publique.
- * Le connecteur ne doit pas servir de relais vers le réseau interne de
- * l'hébergement (SSRF) : le schéma et l'adresse résolue sont contrôlés avant
- * l'appel, et à chaque saut de redirection quand cURL le permet.
+ * Télécharge un document depuis une URL publique, via le socle HTTP partagé
+ * (garde-fous anti-SSRF et coupure au dépassement de taille inclus).
  */
 function li_document_download(string $url): string
 {
-    li_guard_public_url($url);
-
-    $abort = '';
-    $ch    = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER  => true,
-        CURLOPT_TIMEOUT         => LINKEDIN_DOC_TRANSFER_TIMEOUT,
-        CURLOPT_FOLLOWLOCATION  => true,
-        CURLOPT_MAXREDIRS       => 3,
-        CURLOPT_PROTOCOLS       => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-        CURLOPT_USERAGENT       => APP_NAME . '/' . APP_VERSION,
-        // Coupe le transfert dès le dépassement de la limite, sans attendre
-        // la fin du téléchargement (un retour non nul abandonne).
-        CURLOPT_NOPROGRESS       => false,
-        CURLOPT_PROGRESSFUNCTION => static function ($ch, $expected, $received) use (&$abort): int {
-            if ($expected > LINKEDIN_DOC_MAX_BYTES || $received > LINKEDIN_DOC_MAX_BYTES) {
-                $abort = 'size';
-                return 1;
-            }
-            return 0;
-        },
-    ]);
-    // Rejoue le contrôle anti-SSRF sur l'adresse réellement jointe, à chaque
-    // saut (PHP 8.2+ / libcurl 7.80+ ; ailleurs, seule l'URL initiale est vue).
-    // Inapplicable derrière un proxy sortant : l'adresse vue serait celle du
-    // proxy — c'est alors le contrôle sur l'URL initiale qui protège.
-    if (defined('CURLOPT_PREREQFUNCTION') && !li_proxy_configured()) {
-        curl_setopt($ch, CURLOPT_PREREQFUNCTION, static function ($ch, $destIp) use (&$abort): int {
-            try {
-                li_guard_public_ip((string) $destIp);
-                return CURL_PREREQFUNC_OK;
-            } catch (McpToolError) {
-                $abort = 'ip';
-                return CURL_PREREQFUNC_ABORT;
-            }
-        });
-    }
-
-    $body = curl_exec($ch);
-    if ($body === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new McpToolError(match ($abort) {
-            'size'  => 'Document trop volumineux : la limite LinkedIn est de 100 Mo.',
-            'ip'    => 'Le téléchargement a été redirigé vers une adresse interne : seules les URL publiques sont acceptées.',
-            default => 'Téléchargement du document impossible : ' . $err,
-        });
-    }
-    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
-
-    if ($status !== 200) {
-        throw new McpToolError("Le document n'a pas pu être téléchargé (HTTP $status) : $url");
-    }
-    if ($body === '') {
-        throw new McpToolError('Le fichier téléchargé est vide : ' . $url);
-    }
-    li_document_check_size(strlen($body));
-    return $body;
-}
-
-/** Indique si cURL passera par un proxy sortant (variables d'environnement). */
-function li_proxy_configured(): bool
-{
-    foreach (['http_proxy', 'https_proxy', 'all_proxy'] as $name) {
-        if (trim((string) (getenv($name) ?: getenv(strtoupper($name)) ?: '')) !== '') {
-            return true;
-        }
-    }
-    return false;
-}
-
-/** Refuse une URL qui ne serait pas un http(s) vers une adresse publique. */
-function li_guard_public_url(string $url): void
-{
-    $parts  = parse_url($url) ?: [];
-    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
-    $host   = (string) ($parts['host'] ?? '');
-    if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
-        throw new McpToolError('« document_url » doit être une URL http(s) complète (ex. https://exemple.com/deck.pdf).');
-    }
-    foreach (li_resolve_host($host) as $ip) {
-        li_guard_public_ip($ip);
-    }
-}
-
-/** Adresses IP d'un hôte (qui peut déjà être une IP littérale). */
-function li_resolve_host(string $host): array
-{
-    $host = trim($host, '[]'); // IPv6 littéral : [2001:db8::1]
-    if (filter_var($host, FILTER_VALIDATE_IP)) {
-        return [$host];
-    }
-    $ips = array_merge(
-        gethostbynamel($host) ?: [],
-        array_column(@dns_get_record($host, DNS_AAAA) ?: [], 'ipv6')
+    return http_download_limited(
+        $url,
+        LINKEDIN_DOC_MAX_BYTES,
+        'document_url',
+        LINKEDIN_DOC_TRANSFER_TIMEOUT,
+        'Document trop volumineux : la limite LinkedIn est de 100 Mo.'
     );
-    if ($ips === []) {
-        throw new McpToolError('Hôte introuvable pour « document_url » : ' . $host);
-    }
-    return $ips;
-}
-
-/** Refuse une adresse privée, de bouclage ou réservée. */
-function li_guard_public_ip(string $ip): void
-{
-    if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-        throw new McpToolError('« document_url » pointe vers une adresse interne (' . $ip
-            . ') : seules les URL publiques sont acceptées.');
-    }
 }
 
 /**
@@ -1220,39 +1114,18 @@ function li_rest(array $settings, string $method, string $pathAndQuery, ?array $
     ], $body === null ? null : json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 }
 
-/** Requête HTTP bas niveau (cURL). Retourne [status, headers, corps décodé]. */
+/**
+ * Requête HTTP bas niveau, déléguée au socle partagé.
+ * Retourne [status, en-têtes (clés minuscules), corps décodé].
+ */
 function li_http(string $method, string $url, array $headers = [], ?string $rawBody = null, int $timeout = 30): array
 {
-    $respHeaders = [];
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST  => $method,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => $timeout,
-        CURLOPT_HTTPHEADER     => $headers,
-        CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$respHeaders) {
-            if (str_contains($line, ':')) {
-                [$name, $value] = explode(':', $line, 2);
-                $respHeaders[strtolower(trim($name))] = trim($value);
-            }
-            return strlen($line);
-        },
-    ]);
-    if ($rawBody !== null) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $rawBody);
+    try {
+        return http_request($method, $url, $headers, $rawBody, $timeout);
+    } catch (McpToolError $e) {
+        // Message historique du connecteur, plus parlant que le générique.
+        throw new McpToolError(str_replace('Service injoignable', 'Impossible de joindre LinkedIn', $e->getMessage()));
     }
-
-    $raw = curl_exec($ch);
-    if ($raw === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new McpToolError('Impossible de joindre LinkedIn : ' . $err);
-    }
-    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    curl_close($ch);
-
-    $decoded = json_decode((string) $raw, true);
-    return [$status, $respHeaders, is_array($decoded) ? $decoded : []];
 }
 
 /** Convertit une réponse d'erreur LinkedIn en message actionnable. */
@@ -1268,4 +1141,174 @@ function li_api_error(string $prefix, int $status, array $data): McpToolError
         default         => '',
     };
     return new McpToolError(trim("$prefix (HTTP $status)." . ($detail !== '' ? " LinkedIn : $detail." : '') . ($hint !== '' ? " $hint" : '')));
+}
+
+/* --------------------------------------------- Interface (page connecteur) */
+
+/**
+ * Champs de réglages propres à LinkedIn, insérés dans le formulaire commun
+ * de la page connecteur (entre le nom du connecteur et le bouton Enregistrer).
+ */
+function linkedin_settings_form(array $config, array $settings): void
+{
+    $hasInstanceApp = LINKEDIN_DEFAULT_CLIENT_ID !== '' && LINKEDIN_DEFAULT_CLIENT_SECRET !== '';
+    $appType        = linkedin_app_type($settings);
+
+    echo '<div class="field"><span class="field-label">Type d\'app LinkedIn</span>';
+    ui_radio('app_type', 'signin', 'Profil — « Sign In with LinkedIn » + « Share on LinkedIn »', $appType === 'signin',
+        'Les deux produits s\'ajoutent instantanément sur votre app. Publication au nom de votre profil uniquement ; pas de statistiques.');
+    ui_radio('app_type', 'community', 'Community Management API — app LinkedIn dédiée', $appType === 'community',
+        'Publication au nom du profil <strong>et</strong> d\'une page entreprise, statistiques de vos posts personnels et de la page. Règle LinkedIn : ce produit doit être <strong>le seul</strong> de l\'app — créez une app séparée pour lui (accès gratuit, sur demande). Après un changement de type : Enregistrer, saisir les identifiants de la nouvelle app, puis Connecter.');
+    echo '</div>';
+
+    if ($hasInstanceApp) {
+        echo '<p class="hint" style="margin-bottom:18px">' . ui_icon('check')
+            . ' Cette instance fournit déjà une app LinkedIn : vous n\'avez rien à renseigner ci-dessous, sauf pour utiliser la vôtre.</p>';
+    }
+    ui_field([
+        'label' => 'Client ID LinkedIn' . ($hasInstanceApp ? ' (facultatif)' : ''),
+        'name' => 'client_id', 'value' => $settings['client_id'] ?? '',
+        'hint' => 'Créez une app gratuite sur <a href="https://developer.linkedin.com/" target="_blank" rel="noopener">developer.linkedin.com</a> puis copiez son Client ID (onglet Auth). Guide détaillé dans le README.',
+    ]);
+    ui_field([
+        'label' => 'Client Secret LinkedIn' . ($hasInstanceApp ? ' (facultatif)' : ''),
+        'name' => 'client_secret', 'type' => 'password',
+        'placeholder' => !empty($settings['client_secret']) ? '••••••••  (enregistré — laisser vide pour conserver)' : '',
+        'hint' => 'Stocké chiffré (AES-256-GCM). Jamais visible par les personnes avec qui vous partagez.',
+        'autocomplete' => 'off',
+    ]);
+
+    if ($appType === 'community') {
+        ui_field([
+            'label' => 'Page organisation (facultatif)', 'name' => 'org_urn',
+            'value' => $settings['org_urn'] ?? '',
+            'placeholder' => 'urn:li:organization:12345678 ou simplement 12345678',
+            'hint' => 'Nécessaire uniquement pour publier en tant que page et consulter ses statistiques — vous devez être <strong>admin</strong> de la page. L\'identifiant apparaît dans l\'URL d\'admin : linkedin.com/company/<strong>12345678</strong>/admin.',
+        ]);
+    }
+}
+
+/**
+ * Enregistre les réglages LinkedIn soumis. Retourne un complément de message
+ * flash (chaîne vide s'il n'y a rien à signaler).
+ */
+function linkedin_settings_save(array $config, array $post): string
+{
+    $oldSettings = config_settings($config);
+    $appType     = in_array($post['app_type'] ?? '', ['signin', 'community'], true)
+        ? $post['app_type'] : linkedin_app_type($oldSettings);
+
+    $patch = [
+        'client_id' => trim((string) ($post['client_id'] ?? '')),
+        'app_type'  => $appType,
+        'org_mode'  => null, // réglage remplacé par app_type
+    ];
+    $secret = trim((string) ($post['client_secret'] ?? ''));
+    if ($secret !== '') { // vide = conserver l'existant
+        $patch['client_secret'] = $secret;
+    }
+    // Le champ n'est affiché que pour le type community : ne pas effacer une
+    // valeur existante quand il est absent du POST.
+    if (array_key_exists('org_urn', $post)) {
+        $orgUrn = trim((string) $post['org_urn']);
+        if ($orgUrn !== '' && ctype_digit($orgUrn)) {
+            $orgUrn = 'urn:li:organization:' . $orgUrn;
+        }
+        $patch['org_urn'] = $orgUrn;
+    }
+    // Changer de type d'app implique une autre app LinkedIn : le token en place
+    // ne vaut plus rien, on déconnecte proprement.
+    $typeChanged = $appType !== linkedin_app_type($oldSettings) && !empty($oldSettings['access_token']);
+    if ($typeChanged) {
+        $patch += ['access_token' => null, 'token_expires_at' => null,
+            'member_urn' => null, 'member_name' => null, 'granted_scopes' => null];
+    }
+    config_update_settings($config, $patch);
+
+    return $typeChanged
+        ? 'Le type d\'app a changé : renseignez les identifiants de la nouvelle app puis cliquez « Connecter LinkedIn ».'
+        : '';
+}
+
+/** Efface la connexion LinkedIn. Retourne le message flash de confirmation. */
+function linkedin_disconnect(array $config): string
+{
+    config_update_settings($config, [
+        'access_token' => null, 'token_expires_at' => null,
+        'member_urn' => null, 'member_name' => null, 'granted_scopes' => null,
+    ]);
+    return 'LinkedIn déconnecté de ce connecteur.';
+}
+
+/**
+ * Vérifie en un appel que la connexion LinkedIn est opérationnelle (endpoint
+ * d'identité adapté au type d'app : userinfo ou /v2/me).
+ * Retourne le message de succès ; lève RuntimeException avec le message d'échec.
+ */
+function linkedin_test(array $settings): string
+{
+    if (empty($settings['access_token'])) {
+        throw new RuntimeException('LinkedIn n\'est pas connecté sur ce connecteur.');
+    }
+    try {
+        $identity = li_fetch_identity($settings, (string) $settings['access_token']);
+    } catch (RuntimeException $e) {
+        throw new RuntimeException($e->getMessage()
+            . ' Reconnectez LinkedIn ; si l\'erreur persiste, vérifiez les produits activés sur votre app.');
+    }
+    return 'Connexion opérationnelle — LinkedIn répond : '
+        . ($identity['name'] !== '' ? $identity['name'] : '?')
+        . ($identity['email'] !== null ? ' <' . $identity['email'] . '>' : '')
+        . ' (' . $identity['urn'] . ').';
+}
+
+/** Carte « Connexion LinkedIn » de la page connecteur (propriétaire). */
+function linkedin_connect_card(array $config, array $settings, array $summary): void
+{
+    ui_card_open('Connexion LinkedIn', '', 2);
+    if ($summary['connected']) {
+        echo '<div class="rows"><div class="row"><div class="row-main">'
+            . '<strong>' . e($summary['member_name'] ?: 'Profil connecté') . '</strong>'
+            . '<span>' . ($summary['expired']
+                ? 'Token expiré — reconnectez-vous pour réactiver les outils.'
+                : 'Token valable jusqu\'au ' . e(format_date($summary['expires_at'], true))
+                  . ' (LinkedIn limite les tokens à 60 jours).') . '</span>'
+            . '</div><div class="row-actions">';
+        ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'test'],
+            'Tester la connexion', 'btn btn-ghost btn-sm', '', 'check');
+        echo '<a class="btn btn-ghost btn-sm" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('refresh') . 'Reconnecter</a>';
+        ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'disconnect'], 'Déconnecter', 'btn btn-danger btn-sm');
+        echo '</div></div></div>';
+        if (!empty($settings['granted_scopes'])) {
+            echo '<p class="hint">Scopes accordés par LinkedIn : <code>' . e(str_replace(',', ' ', $settings['granted_scopes'])) . '</code></p>';
+        }
+    } else {
+        $ready = linkedin_client_id($settings) !== '' && linkedin_client_secret($settings) !== '';
+        echo '<p class="muted" style="margin-bottom:16px">Autorisez l\'application à publier en votre nom :'
+            . ' LinkedIn affichera un écran de consentement pour les autorisations ci-dessous.</p>';
+
+        // Diagnostic : chaque scope demandé doit être couvert par un produit
+        // actif sur l'app LinkedIn, sinon LinkedIn refuse l'autorisation
+        // (« Invalid scope ») avant même l'écran de consentement.
+        $byProduct = [];
+        foreach (linkedin_scopes($settings) as $scope => $product) {
+            $byProduct[$product][] = $scope;
+        }
+        echo '<div class="rows" style="margin-bottom:16px">';
+        foreach ($byProduct as $product => $scopes) {
+            echo '<div class="row"><div class="row-main">'
+                . '<strong><code>' . e(implode(' ', $scopes)) . '</code></strong>'
+                . '<span>Nécessite le produit « ' . e($product) . ' » (onglet Products de votre app LinkedIn).</span>'
+                . '</div></div>';
+        }
+        echo '</div>';
+
+        if ($ready) {
+            echo '<a class="btn btn-primary" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('linkedin') . 'Connecter LinkedIn</a>';
+        } else {
+            echo '<p class="hint">Renseignez d\'abord le Client ID et le Client Secret ci-dessus.</p>';
+        }
+        ui_copy_row('URL de redirection à déclarer dans votre app LinkedIn (onglet Auth)', base_url('/oauth-linkedin.php'));
+    }
+    ui_card_close();
 }

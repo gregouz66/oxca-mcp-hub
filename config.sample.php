@@ -60,3 +60,21 @@ define('LINKEDIN_API_VERSION', '202510');
 // le Client ID / Client Secret de sa propre app LinkedIn (gratuite).
 define('LINKEDIN_DEFAULT_CLIENT_ID', '');
 define('LINKEDIN_DEFAULT_CLIENT_SECRET', '');
+
+/* -------------------------------------------------------------- Instagram */
+
+// Version de l'API Graph utilisée pour Instagram. Meta maintient chaque version
+// environ deux ans, puis bascule silencieusement les appels vers la plus
+// ancienne encore valide : gardez cette valeur à jour.
+define('INSTAGRAM_API_VERSION', 'v26.0');
+
+// Optionnel : app Meta partagée par toute l'instance.
+//
+// ⚠️  À n'utiliser qu'en connaissance de cause. Tant que chaque utilisateur
+// publie sur SON compte avec SA propre app Meta (dont il est administrateur),
+// aucune revue n'est nécessaire : Meta accorde le « Standard Access »
+// automatiquement. Dès qu'une app sert des personnes qui n'ont pas de rôle sur
+// elle, il faut l'« Advanced Access » : App Review, vérification d'entreprise
+// et captures vidéo par permission — plusieurs semaines de procédure.
+define('INSTAGRAM_DEFAULT_APP_ID', '');
+define('INSTAGRAM_DEFAULT_APP_SECRET', '');

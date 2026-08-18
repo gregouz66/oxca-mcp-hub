@@ -54,64 +54,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($name !== '' && $name !== $config['name']) {
                 config_rename($config, mb_str_limit($name, 120));
             }
-            $oldSettings = config_settings($config);
-            $appType     = in_array($_POST['app_type'] ?? '', ['signin', 'community'], true)
-                ? $_POST['app_type'] : linkedin_app_type($oldSettings);
-            $patch = [
-                'client_id' => trim((string) ($_POST['client_id'] ?? '')),
-                'app_type'  => $appType,
-                'org_mode'  => null, // réglage remplacé par app_type
-            ];
-            $secret = trim((string) ($_POST['client_secret'] ?? ''));
-            if ($secret !== '') { // vide = conserver l'existant
-                $patch['client_secret'] = $secret;
-            }
-            // Le champ n'est affiché que pour le type community : ne pas
-            // effacer une valeur existante quand il est absent du POST.
-            if (array_key_exists('org_urn', $_POST)) {
-                $orgUrn = trim((string) $_POST['org_urn']);
-                if ($orgUrn !== '' && ctype_digit($orgUrn)) {
-                    $orgUrn = 'urn:li:organization:' . $orgUrn;
-                }
-                $patch['org_urn'] = $orgUrn;
-            }
-            // Changer de type d'app implique une autre app LinkedIn : le token
-            // en place ne vaut plus rien, on déconnecte proprement.
-            $typeChanged = $appType !== linkedin_app_type($oldSettings) && !empty($oldSettings['access_token']);
-            if ($typeChanged) {
-                $patch += ['access_token' => null, 'token_expires_at' => null,
-                    'member_urn' => null, 'member_name' => null, 'granted_scopes' => null];
-            }
-            config_update_settings($config, $patch);
-            flash('ok', 'Réglages enregistrés.' . ($typeChanged
-                ? ' Le type d\'app a changé : renseignez les identifiants de la nouvelle app puis cliquez « Connecter LinkedIn ».' : ''));
+            // Les réglages propres au type sont enregistrés par le connecteur
+            // lui-même, qui peut compléter le message de confirmation.
+            $extra = isset($type['settings_save_fn'])
+                ? (string) ($type['settings_save_fn'])($config, $_POST) : '';
+            flash('ok', 'Réglages enregistrés.' . ($extra !== '' ? ' ' . $extra : ''));
             redirect($back);
 
         case 'disconnect':
-            config_update_settings($config, [
-                'access_token' => null, 'token_expires_at' => null,
-                'member_urn' => null, 'member_name' => null, 'granted_scopes' => null,
-            ]);
-            flash('ok', 'LinkedIn déconnecté de ce connecteur.');
+            flash('ok', isset($type['disconnect_fn'])
+                ? (string) ($type['disconnect_fn'])($config)
+                : 'Connexion supprimée de ce connecteur.');
             redirect($back);
 
         case 'test':
-            // Vérifie en un clic que la connexion LinkedIn est opérationnelle
-            // (endpoint d'identité adapté au type d'app : userinfo ou /v2/me).
-            $settings = config_settings($config);
-            if (empty($settings['access_token'])) {
-                flash('error', 'LinkedIn n\'est pas connecté sur ce connecteur.');
-            } else {
-                try {
-                    $identity = li_fetch_identity($settings, (string) $settings['access_token']);
-                    flash('ok', 'Connexion opérationnelle — LinkedIn répond : '
-                        . ($identity['name'] !== '' ? $identity['name'] : '?')
-                        . ($identity['email'] !== null ? ' <' . $identity['email'] . '>' : '')
-                        . ' (' . $identity['urn'] . ').');
-                } catch (RuntimeException $e) {
-                    flash('error', $e->getMessage()
-                        . ' Reconnectez LinkedIn ; si l\'erreur persiste, vérifiez les produits activés sur votre app.');
-                }
+            // Vérifie en un clic que la connexion est opérationnelle : chaque
+            // type interroge l'endpoint d'identité qui lui correspond.
+            if (!isset($type['test_fn'])) {
+                flash('error', 'Ce type de connecteur ne propose pas de test de connexion.');
+                redirect($back);
+            }
+            try {
+                flash('ok', (string) ($type['test_fn'])(config_settings($config)));
+            } catch (RuntimeException $e) {
+                flash('error', $e->getMessage());
             }
             redirect($back);
 
@@ -133,6 +99,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             config_delete((int) $config['id']);
             flash('ok', 'Connecteur supprimé. Tous les accès et tokens associés sont révoqués.');
             redirect('/dashboard.php');
+    }
+
+    // Actions supplémentaires propres au type de connecteur (diagnostics…).
+    if (isset($type['action_fn'])) {
+        $handled = ($type['action_fn'])($config, $action);
+        if ($handled !== null) {
+            flash($handled[0], $handled[1]);
+        }
     }
     redirect($back);
 }
@@ -157,7 +131,6 @@ ui_page_header(
 
 /* ---- 1. Réglages (propriétaire uniquement) --------------------------- */
 if ($isOwner) {
-    $hasInstanceApp = LINKEDIN_DEFAULT_CLIENT_ID !== '' && LINKEDIN_DEFAULT_CLIENT_SECRET !== '';
     ui_card_open('Réglages', 'Seules les informations strictement nécessaires sont demandées.', 1);
     echo '<form method="post">' . csrf_field()
         . '<input type="hidden" name="id" value="' . (int) $config['id'] . '">'
@@ -165,90 +138,18 @@ if ($isOwner) {
 
     ui_field(['label' => 'Nom du connecteur', 'name' => 'name', 'value' => $config['name'], 'required' => true]);
 
-    $appType = linkedin_app_type($settings);
-    echo '<div class="field"><span class="field-label">Type d\'app LinkedIn</span>';
-    ui_radio('app_type', 'signin', 'Profil — « Sign In with LinkedIn » + « Share on LinkedIn »', $appType === 'signin',
-        'Les deux produits s\'ajoutent instantanément sur votre app. Publication au nom de votre profil uniquement ; pas de statistiques.');
-    ui_radio('app_type', 'community', 'Community Management API — app LinkedIn dédiée', $appType === 'community',
-        'Publication au nom du profil <strong>et</strong> d\'une page entreprise, statistiques de vos posts personnels et de la page. Règle LinkedIn : ce produit doit être <strong>le seul</strong> de l\'app — créez une app séparée pour lui (accès gratuit, sur demande). Après un changement de type : Enregistrer, saisir les identifiants de la nouvelle app, puis Connecter.');
-    echo '</div>';
-
-    if ($hasInstanceApp) {
-        echo '<p class="hint" style="margin-bottom:18px">' . ui_icon('check')
-            . ' Cette instance fournit déjà une app LinkedIn : vous n\'avez rien à renseigner ci-dessous, sauf pour utiliser la vôtre.</p>';
-    }
-    ui_field([
-        'label' => 'Client ID LinkedIn' . ($hasInstanceApp ? ' (facultatif)' : ''),
-        'name' => 'client_id', 'value' => $settings['client_id'] ?? '',
-        'hint' => 'Créez une app gratuite sur <a href="https://developer.linkedin.com/" target="_blank" rel="noopener">developer.linkedin.com</a> puis copiez son Client ID (onglet Auth). Guide détaillé dans le README.',
-    ]);
-    ui_field([
-        'label' => 'Client Secret LinkedIn' . ($hasInstanceApp ? ' (facultatif)' : ''),
-        'name' => 'client_secret', 'type' => 'password',
-        'placeholder' => !empty($settings['client_secret']) ? '••••••••  (enregistré — laisser vide pour conserver)' : '',
-        'hint' => 'Stocké chiffré (AES-256-GCM). Jamais visible par les personnes avec qui vous partagez.',
-        'autocomplete' => 'off',
-    ]);
-
-    if ($appType === 'community') {
-        ui_field([
-            'label' => 'Page organisation (facultatif)', 'name' => 'org_urn',
-            'value' => $settings['org_urn'] ?? '',
-            'placeholder' => 'urn:li:organization:12345678 ou simplement 12345678',
-            'hint' => 'Nécessaire uniquement pour publier en tant que page et consulter ses statistiques — vous devez être <strong>admin</strong> de la page. L\'identifiant apparaît dans l\'URL d\'admin : linkedin.com/company/<strong>12345678</strong>/admin.',
-        ]);
+    // Champs propres au type de connecteur (identifiants d'app, options…).
+    if (isset($type['settings_form_fn'])) {
+        ($type['settings_form_fn'])($config, $settings);
     }
 
     echo '<div style="margin-top:20px"><button type="submit" class="btn btn-primary">Enregistrer</button></div></form>';
     ui_card_close();
 
-    /* ---- 2. Connexion LinkedIn --------------------------------------- */
-    ui_card_open('Connexion LinkedIn', '', 2);
-    if ($summary['connected']) {
-        echo '<div class="rows"><div class="row"><div class="row-main">'
-            . '<strong>' . e($summary['member_name'] ?: 'Profil connecté') . '</strong>'
-            . '<span>' . ($summary['expired']
-                ? 'Token expiré — reconnectez-vous pour réactiver les outils.'
-                : 'Token valable jusqu\'au ' . e(format_date($summary['expires_at'], true))
-                  . ' (LinkedIn limite les tokens à 60 jours).') . '</span>'
-            . '</div><div class="row-actions">';
-        ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'test'],
-            'Tester la connexion', 'btn btn-ghost btn-sm', '', 'check');
-        echo '<a class="btn btn-ghost btn-sm" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('refresh') . 'Reconnecter</a>';
-        ui_post_button(base_url('/connector.php'), ['id' => $config['id'], 'action' => 'disconnect'], 'Déconnecter', 'btn btn-danger btn-sm');
-        echo '</div></div></div>';
-        if (!empty($settings['granted_scopes'])) {
-            echo '<p class="hint">Scopes accordés par LinkedIn : <code>' . e(str_replace(',', ' ', $settings['granted_scopes'])) . '</code></p>';
-        }
-    } else {
-        $ready = linkedin_client_id($settings) !== '' && linkedin_client_secret($settings) !== '';
-        echo '<p class="muted" style="margin-bottom:16px">Autorisez l\'application à publier en votre nom :'
-            . ' LinkedIn affichera un écran de consentement pour les autorisations ci-dessous.</p>';
-
-        // Diagnostic : chaque scope demandé doit être couvert par un produit
-        // actif sur l'app LinkedIn, sinon LinkedIn refuse l'autorisation
-        // (« Invalid scope ») avant même l'écran de consentement.
-        $byProduct = [];
-        foreach (linkedin_scopes($settings) as $scope => $product) {
-            $byProduct[$product][] = $scope;
-        }
-        echo '<div class="rows" style="margin-bottom:16px">';
-        foreach ($byProduct as $product => $scopes) {
-            echo '<div class="row"><div class="row-main">'
-                . '<strong><code>' . e(implode(' ', $scopes)) . '</code></strong>'
-                . '<span>Nécessite le produit « ' . e($product) . ' » (onglet Products de votre app LinkedIn).</span>'
-                . '</div></div>';
-        }
-        echo '</div>';
-
-        if ($ready) {
-            echo '<a class="btn btn-primary" href="' . e(base_url('/oauth-linkedin.php?action=start&id=' . $config['id'])) . '">' . ui_icon('linkedin') . 'Connecter LinkedIn</a>';
-        } else {
-            echo '<p class="hint">Renseignez d\'abord le Client ID et le Client Secret ci-dessus.</p>';
-        }
-        ui_copy_row('URL de redirection à déclarer dans votre app LinkedIn (onglet Auth)', base_url('/oauth-linkedin.php'));
+    /* ---- 2. Connexion au service ------------------------------------- */
+    if (isset($type['connect_card_fn'])) {
+        ($type['connect_card_fn'])($config, $settings, $summary);
     }
-    ui_card_close();
 }
 
 /* ---- 3. Endpoint MCP + instructions Claude --------------------------- */

@@ -11,6 +11,10 @@ aucun coût.
 - 💼 **LinkedIn inclus** : publier des posts (texte, lien, **carrousel PDF**),
   commenter, réagir, supprimer, consulter les statistiques d'une page
   organisation — uniquement via les produits **gratuits** de l'API LinkedIn.
+- 📸 **Instagram inclus** : publier une **image** ou un **carrousel** (2 à 10
+  images) sur un compte professionnel, avec conversion automatique au format
+  exigé par Instagram, suivi du quota et reprise après interruption. Sans App
+  Review ni vérification d'entreprise tant que vous publiez sur vos comptes.
 - 🤝 **Partage maîtrisé** : partagez un connecteur par simple adresse email ;
   chaque invité reçoit sa **propre URL révocable**, sans jamais voir vos
   secrets. Révoquez un accès ou supprimez le connecteur à tout moment.
@@ -31,11 +35,14 @@ aucun coût.
 5. [Brancher Claude Code](#brancher-claude-code)
 6. [Partage et révocation](#partage-et-révocation)
 7. [Outils LinkedIn disponibles](#outils-linkedin-disponibles)
-8. [Documentation des outils d'un connecteur](#documentation-des-outils-dun-connecteur)
-9. [Sécurité](#sécurité)
-10. [Structure du projet](#structure-du-projet)
-11. [Ajouter un type de MCP](#ajouter-un-type-de-mcp)
-12. [Dépannage](#dépannage)
+8. [Créer votre app Instagram (gratuite)](#créer-votre-app-instagram-gratuite)
+9. [Outils Instagram disponibles](#outils-instagram-disponibles)
+10. [Documentation des outils d'un connecteur](#documentation-des-outils-dun-connecteur)
+11. [Sécurité](#sécurité)
+12. [Structure du projet](#structure-du-projet)
+13. [Ajouter un type de MCP](#ajouter-un-type-de-mcp)
+14. [Tests](#tests)
+15. [Dépannage](#dépannage)
 
 ---
 
@@ -43,11 +50,12 @@ aucun coût.
 
 | Composant | Minimum |
 |---|---|
-| PHP | 8.1+ avec `pdo_mysql`, `openssl`, `curl` (présents sur la quasi-totalité des mutualisés) |
+| PHP | 8.1+ avec `pdo_mysql`, `openssl`, `curl` (présents sur la quasi-totalité des mutualisés) ; `gd` recommandé pour Instagram (conversion des images) |
 | Base de données | MySQL 5.7+ ou MariaDB 10.3+ |
 | Serveur web | Apache (`.htaccess` fourni) ou équivalent |
 | HTTPS | Fortement recommandé — **obligatoire** pour utiliser le connecteur depuis claude.ai |
 | Email sortant | `mail()` PHP **ou** un compte SMTP (souvent fourni par l'hébergeur) |
+| `storage/` inscriptible | Requis pour Instagram : les images à publier y sont déposées le temps qu'Instagram vienne les télécharger |
 
 Aucune dépendance externe : déposez les fichiers, c'est tout.
 
@@ -252,6 +260,154 @@ fichier de votre machine : le document se transmet de deux façons.
   est refusée : le connecteur ne sert pas de relais vers le réseau de
   l'hébergement.
 
+## Créer votre app Instagram (gratuite)
+
+### Le prérequis qui n'est pas négociable
+
+**Instagram ne permet de publier que depuis un compte professionnel** —
+Entreprise ou Créateur. Un compte personnel n'a *aucune* API de publication :
+la seule qui les touchait, *Basic Display*, a été arrêtée le 4 décembre 2024,
+et elle était de toute façon en lecture seule.
+
+La bascule se fait dans l'application Instagram — **Paramètres → Pour les
+professionnels → Type de compte et outils**. Elle est gratuite, réversible, et
+conserve vos abonnés et vos publications. Une contrepartie réelle : **le compte
+devient public** (le réglage « compte privé » est désactivé pour les comptes
+professionnels).
+
+| | Entreprise | Créateur |
+|---|---|---|
+| Image et carrousel dans le fil | ✅ | ✅ |
+| Stories par API | ✅ | ❌ |
+| Tags produits | ✅ | ❌ |
+
+Aucune page Facebook n'est nécessaire : le connecteur utilise
+« Instagram API with Instagram Login ».
+
+### Les étapes, une fois
+
+1. Sur [developers.facebook.com](https://developers.facebook.com/apps/),
+   **créez une app de type « Business »**. Si votre app existante n'est pas de
+   ce type, il faut en créer une nouvelle : le type n'est pas modifiable.
+2. Dans l'app : **Instagram → API setup with Instagram business login**.
+3. Ouvrez **Business login settings** et relevez l'**Instagram App ID** et
+   l'**Instagram App Secret**. ⚠️ Ce ne sont **pas** l'App ID / App Secret
+   *Facebook* affichés ailleurs dans le tableau de bord — c'est le piège
+   d'intégration le plus fréquent.
+4. Déclarez l'**OAuth Redirect URI** affichée sur la page du connecteur, soit
+   `https://votre-site/oauth-instagram.php`. Meta ajoute parfois un slash final
+   à l'URL enregistrée : vérifiez-la caractère pour caractère après validation.
+5. Renseignez la **Privacy policy URL** :
+   `https://votre-site/confidentialite.php`.
+6. Dans le hub : créez un connecteur Instagram, collez l'App ID et l'App
+   Secret, enregistrez, puis cliquez **Connecter Instagram**.
+
+### Le raccourci : sans OAuth du tout
+
+Pour publier sur **votre propre** compte, vous pouvez sauter entièrement le
+flux OAuth. Dans **API setup with Instagram business login**, le bouton
+**« Generate token »** délivre directement un jeton valable **60 jours**.
+Collez-le dans le champ « Token d'accès collé à la main » des réglages du
+connecteur : il est validé immédiatement et le connecteur devient opérationnel.
+
+### App Review : pourquoi vous n'en avez pas besoin
+
+Meta accorde le **Standard Access** automatiquement aux apps de type Business,
+et le Standard Access suffit dès lors que **les personnes qui utilisent l'app
+ont un rôle sur cette app**. En pratique : si chacun crée sa propre app Meta et
+publie sur son propre compte, il n'y a **ni App Review, ni vérification
+d'entreprise, ni Data Use Checkup**.
+
+C'est exactement pour cette raison que `INSTAGRAM_DEFAULT_APP_ID` /
+`INSTAGRAM_DEFAULT_APP_SECRET` (une app partagée par toute l'instance) sont
+**vides par défaut** : les activer ferait basculer l'instance en usage
+multi-utilisateurs, donc en **Advanced Access** — App Review, vérification
+d'entreprise et captures vidéo par autorisation, soit plusieurs semaines.
+
+### Le point technique à connaître
+
+**Instagram ne reçoit pas vos images : ce sont ses serveurs qui viennent les
+télécharger.** Les images transmises par Claude sont donc déposées sur votre
+serveur et servies par `media.php` derrière une URL imprévisible, puis
+supprimées automatiquement (24 h au plus).
+
+Il faut donc que votre site soit **publiquement joignable en HTTPS**, sans
+redirection ni protection anti-robot sur `/media.php`. Le bouton **« Tester la
+publication média »**, sur la page du connecteur, vérifie tout cela en un clic
+et nomme précisément ce qui bloque.
+
+## Outils Instagram disponibles
+
+| Outil | Ce qu'il fait |
+|---|---|
+| `instagram_publish_image` | Publie une image dans le fil, avec légende, texte alternatif, comptes identifiés, co-auteurs et lieu. |
+| `instagram_publish_carousel` | Publie un carrousel de 2 à 10 images. |
+| `instagram_publish_container` | Termine une publication interrompue (voir ci-dessous). |
+| `instagram_get_profile` | Compte connecté : nom d'utilisateur, type, abonnés, publications. |
+| `instagram_publishing_limit` | Quota de publication consommé et restant sur 24 h. |
+| `instagram_list_media` | Publications récentes, avec leur lien public. |
+
+### Les images sont converties pour vous
+
+Instagram **rejette** — sans recadrer — toute image hors de ses clous. Le
+connecteur normalise donc systématiquement avant l'envoi :
+
+| Contrainte Instagram | Ce que fait le connecteur |
+|---|---|
+| JPEG uniquement | Convertit PNG, WebP, etc. |
+| 8 Mo maximum | Compresse en qualité dégressive, puis réduit si nécessaire |
+| 320 à 1440 px de large | Redimensionne dans les bornes |
+| Rapport entre 4:5 et 1.91:1 | **Refuse** en expliquant — ou complète par des marges avec `fit: "pad"` |
+| Orientation EXIF | Redresse les photos prises au téléphone |
+
+Les images sont fournies soit par `image_url` (URL publique directe), soit par
+`image_base64`. Avec une URL, le connecteur ne ré-héberge l'image que si elle
+n'est pas conforme (`stage: "auto"`, par défaut).
+
+### Ce que l'hébergement impose
+
+Instagram télécharge les images sur votre serveur : ces trois limites viennent
+donc de la machine, pas de l'API. Elles sont toutes mesurées, et chacune
+produit un message explicite plutôt qu'un échec obscur.
+
+| Limite | Valeur | Pourquoi |
+|---|---|---|
+| Dimensions d'une image | **24 mégapixels** | Un JPEG de 8 Ko peut couvrir 30000 × 2 pixels et réclamer **1,8 Go** une fois complété par des marges. Cette mémoire est allouée par GD, donc **hors du `memory_limit` de PHP**, qui ne la plafonne pas : sans borne, le système tue le processus au lieu d'échouer proprement. Comptez ~4 Mo par mégapixel, le double pendant un redimensionnement — ~230 Mo à la limite. Un capteur haut de gamme produit 24 Mpx : les photos d'appareils courants passent toutes. |
+| Envoi en base64 | **~18 Mo** par image, **~32 Mo** par carrousel | Décoder une image coûte plusieurs fois sa taille, et un mutualisé plafonne souvent à 128 Mo. Un carrousel de dix photos ordinaires consomme ~18 Mo : la limite ne se rencontre qu'avec des images non redimensionnées. Au-delà, passez par `image_url` — Instagram télécharge alors directement, sans passer par la mémoire du serveur. |
+| Dépôt `storage/media` | **300 Mo**, 24 h | Les images ne sont pas supprimées dès la publication : Meta ne s'engage que sur leur disponibilité « au moment de la tentative » et ne documente rien au-delà. Elles expirent d'elles-mêmes, et au-delà du plafond les plus anciennes cèdent la place. Aucune tâche planifiée n'est nécessaire : le ménage se fait à chaque dépôt et à chaque lecture. |
+
+### Publier un carrousel
+
+```
+Publie un carrousel Instagram avec ces trois images et la légende
+« Trois vues du même endroit ».
+```
+
+Claude appelle `instagram_publish_carousel`. Trois points à connaître :
+
+- **Toutes les images sont recadrées d'après la première** — c'est elle qui
+  fixe le format du carrousel.
+- La légende porte sur le carrousel entier, jamais sur une image : Instagram
+  *ignore silencieusement* une légende posée sur un élément, le connecteur la
+  refuse donc explicitement.
+- Un carrousel ne compte que pour **une seule publication** dans le quota.
+
+### Si la publication est interrompue
+
+Préparer dix images peut dépasser le temps d'exécution alloué par un
+hébergement mutualisé. Dans ce cas **rien n'est perdu** : les conteneurs créés
+chez Instagram restent valables 24 h, et le message d'erreur donne la commande
+de reprise exacte (`instagram_publish_container` avec le `creation_id`, ou
+`instagram_publish_carousel` avec les `children` déjà prêts).
+
+### Le jeton se renouvelle tout seul
+
+Un jeton Instagram vaut 60 jours et **meurt définitivement** s'il n'est pas
+renouvelé à temps. Comme un mutualisé ne garantit pas de tâche planifiée, le
+connecteur le renouvelle **à l'usage** : dès qu'il a plus de 24 h (condition de
+Meta) et qu'il expire dans moins de 10 jours. Tant que le connecteur sert au
+moins une fois tous les 60 jours, il ne se déconnecte jamais.
+
 ## Documentation des outils d'un connecteur
 
 Chaque connecteur expose sa propre référence, à jour par construction puisqu'elle
@@ -311,15 +467,18 @@ ni Client ID/Secret, ni token LinkedIn.
 ├── connector.php           Gestion d'un connecteur (réglages, partage, endpoint)
 ├── tools.php               Documentation des outils d'un connecteur (HTML + JSON)
 ├── oauth-linkedin.php      Flux OAuth LinkedIn
+├── oauth-instagram.php     Flux OAuth Instagram (Business Login)
 ├── mcp.php                 Endpoint MCP public (Streamable HTTP, JSON-RPC 2.0)
+├── media.php               Service public des images à publier (Instagram)
 ├── mentions-legales.php    Mentions légales (⚠️ adaptez l'identité si vous forkez)
-├── confidentialite.php     Politique de confidentialité — URL à donner à LinkedIn
+├── confidentialite.php     Politique de confidentialité — URL à donner à LinkedIn et à Meta
 ├── install.php             Installateur (à supprimer après usage)
 ├── config.sample.php       Modèle de configuration
 ├── schema.sql              Schéma MySQL
 ├── assets/
 │   ├── css/app.css         Design system complet (variables, composants)
 │   └── js/app.js           Interactions (copier, confirmation, code OTP)
+├── tests/                  Suite de tests (php tests/run.php)
 └── app/                    Code interne (protégé, jamais servi)
     ├── bootstrap.php       Chargement commun + session
     ├── auth.php            Authentification sans mot de passe
@@ -328,9 +487,13 @@ ni Client ID/Secret, ni token LinkedIn.
     ├── mail.php            mail() / SMTP intégré / journal
     ├── ui.php              Composants d'interface réutilisables
     ├── util.php, db.php    Aides transverses, PDO
+    ├── http.php            Socle HTTP partagé + garde-fous anti-SSRF
+    ├── media.php           Dépôt temporaire des images (Instagram vient les chercher)
+    ├── image.php           Conversion des images au format d'une plateforme
     └── mcp/
         ├── server.php      Protocole MCP (initialize, tools/list, tools/call…)
-        └── linkedin.php    Outils LinkedIn + client API + OAuth
+        ├── linkedin.php    Outils LinkedIn + client API + OAuth
+        └── instagram.php   Outils Instagram + client API + OAuth
 ```
 
 ## Ajouter un type de MCP
@@ -360,9 +523,45 @@ Le hub est conçu pour accueillir d'autres connecteurs pré-codés :
      documentés, sans conditions ni erreurs.
 4. Si certains réglages sont sensibles, listez-les dans
    `config_sensitive_keys()` : ils seront chiffrés automatiquement.
+5. Pour que la page du connecteur affiche vos réglages et votre bouton de
+   connexion, déclarez les hooks d'interface — `connector.php` ne connaît
+   aucun type en particulier :
+
+   | Hook | Signature | Rôle |
+   |---|---|---|
+   | `settings_form_fn` | `(array $config, array $settings): void` | Champs du formulaire de réglages |
+   | `settings_save_fn` | `(array $config, array $post): string` | Enregistre ; retourne un complément de message |
+   | `connect_card_fn` | `(array $config, array $settings, array $summary): void` | Carte « Connexion » |
+   | `disconnect_fn` | `(array $config): string` | Efface la connexion ; retourne le message |
+   | `test_fn` | `(array $settings): string` | Teste la connexion ; lève `RuntimeException` en échec |
+   | `action_fn` | `(array $config, string $action): ?array` | Actions supplémentaires ; retourne `[type, message]` ou `null` |
 
 Le catalogue, la création, le partage, les tokens et l'endpoint MCP
 fonctionnent alors sans autre modification.
+
+## Tests
+
+Le dépôt embarque une suite de tests sans dépendance — ni Composer, ni
+PHPUnit :
+
+```bash
+php tests/run.php              # tout
+php tests/run.php instagram    # un fichier en particulier
+```
+
+Elle couvre la préparation des images, le dépôt et le service des médias, les
+flux de publication Instagram (image, carrousel, reprise), la traduction des
+erreurs de l'API, le cycle de vie des jetons, le protocole MCP, et la
+non-régression du connecteur LinkedIn. Les appels aux API sont **simulés** :
+aucun accès réseau ni compte réel n'est nécessaire.
+
+Les tests bout en bout démarrent le serveur intégré de PHP sur l'adresse
+d'`APP_URL` pour vérifier les en-têtes réellement émis par `mcp.php` et
+`media.php`.
+
+> ⚠️ Les tests écrivent dans la base configurée par `config.php` (utilisateurs
+> et connecteurs jetables). Faites-les pointer vers une **base de test**, jamais
+> vers votre base de production.
 
 ## Dépannage
 
@@ -407,6 +606,32 @@ Management API » avec le Client ID / Secret de cette nouvelle app.
 **LinkedIn : `invalid redirect_uri`** — l'URL de redirection déclarée dans
 l'app LinkedIn doit être exactement `APP_URL/oauth-linkedin.php` (HTTPS,
 même domaine, pas de slash final surnuméraire).
+
+**Instagram : « Le compte n'est pas un compte professionnel »** — la
+publication par API est réservée aux comptes Entreprise et Créateur. Basculez
+le compte dans l'application Instagram (Paramètres → Pour les professionnels),
+puis reconnectez-le depuis la page du connecteur.
+
+**Instagram : l'échange OAuth est refusé** — dans neuf cas sur dix, ce sont
+l'App ID et l'App Secret *Facebook* qui ont été collés au lieu de ceux
+d'**Instagram** (app Meta → Instagram → API setup with Instagram business login
+→ Business login settings). Vérifiez aussi l'URL de redirection : Meta y ajoute
+parfois un slash final.
+
+**Instagram : « n'a pas réussi à télécharger l'image »** (`9004 / 2207052`) —
+Instagram vient chercher les images sur votre serveur. Cliquez sur **« Tester
+la publication média »** sur la page du connecteur : le diagnostic distingue
+une `APP_URL` erronée, un `storage/` non inscriptible, une redirection et un
+blocage par WAF ou protection anti-hotlink. Si vous aviez fourni `image_url`,
+réessayez sans : le connecteur hébergera l'image lui-même.
+
+**Instagram : « rapport de X:1, hors des bornes acceptées »** — Instagram
+*rejette* les images hors 4:5–1.91:1 au lieu de les recadrer. Demandez à Claude
+de repasser avec `fit: "pad"` pour compléter l'image par des marges.
+
+**Instagram : la publication s'arrête sur « Instagram traite encore… »** — le
+temps d'exécution de l'hébergement a été atteint. Rien n'est perdu : le message
+donne l'appel de reprise à faire (les conteneurs restent valables 24 h).
 
 **Claude Code ne voit pas les outils** — testez l'endpoint à la main :
 
