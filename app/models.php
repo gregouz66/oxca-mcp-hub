@@ -21,13 +21,33 @@ function mcp_types(): array
 {
     return [
         'linkedin' => [
-            'label'       => 'LinkedIn',
-            'tagline'     => 'Publiez des posts, commentez, réagissez et suivez vos statistiques LinkedIn depuis Claude.',
-            'icon'        => 'linkedin',
-            'tools_fn'    => 'linkedin_tools',
-            'catalog_fn'  => 'linkedin_tool_catalog',
-            'call_fn'     => 'linkedin_call',
-            'summary_fn'  => 'linkedin_summary',
+            'label'             => 'LinkedIn',
+            'tagline'           => 'Publiez des posts, commentez, réagissez et suivez vos statistiques LinkedIn depuis Claude.',
+            'icon'              => 'linkedin',
+            'tools_fn'          => 'linkedin_tools',
+            'catalog_fn'        => 'linkedin_tool_catalog',
+            'call_fn'           => 'linkedin_call',
+            'summary_fn'        => 'linkedin_summary',
+            'settings_form_fn'  => 'linkedin_settings_form',
+            'settings_save_fn'  => 'linkedin_settings_save',
+            'connect_card_fn'   => 'linkedin_connect_card',
+            'disconnect_fn'     => 'linkedin_disconnect',
+            'test_fn'           => 'linkedin_test',
+        ],
+        'instagram' => [
+            'label'             => 'Instagram',
+            'tagline'           => 'Publiez des images et des carrousels sur votre compte Instagram professionnel depuis Claude.',
+            'icon'              => 'instagram',
+            'tools_fn'          => 'instagram_tools',
+            'catalog_fn'        => 'instagram_tool_catalog',
+            'call_fn'           => 'instagram_call',
+            'summary_fn'        => 'instagram_summary',
+            'settings_form_fn'  => 'instagram_settings_form',
+            'settings_save_fn'  => 'instagram_settings_save',
+            'connect_card_fn'   => 'instagram_connect_card',
+            'disconnect_fn'     => 'instagram_disconnect',
+            'test_fn'           => 'instagram_test',
+            'action_fn'         => 'instagram_action',
         ],
     ];
 }
@@ -110,8 +130,9 @@ function config_delete(int $id): void
 function config_sensitive_keys(string $type): array
 {
     return match ($type) {
-        'linkedin' => ['client_secret', 'access_token'],
-        default    => [],
+        'linkedin'  => ['client_secret', 'access_token'],
+        'instagram' => ['app_secret', 'access_token'],
+        default     => [],
     };
 }
 

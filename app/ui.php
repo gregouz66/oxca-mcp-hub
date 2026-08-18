@@ -213,6 +213,7 @@ function ui_icon(string $name): string
     $paths = [
         'logo'     => '<rect x="3" y="3" width="18" height="18" rx="5.5" fill="#0071e3"/><path d="M8 12.5l2.6 2.6L16 9.7" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
         'linkedin' => '<rect x="3" y="3" width="18" height="18" rx="4" fill="#0A66C2"/><path d="M8.3 10.2v6.3M8.3 7.6v.1M11.6 16.5v-3.7c0-1.4 1-2.4 2.3-2.4s2.1 1 2.1 2.4v3.7" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round"/>',
+        'instagram' => '<rect x="3" y="3" width="18" height="18" rx="5" fill="#E1306C"/><rect x="7" y="7" width="10" height="10" rx="3.2" stroke="#fff" stroke-width="1.6" fill="none"/><circle cx="12" cy="12" r="2.4" stroke="#fff" stroke-width="1.6" fill="none"/><circle cx="15.7" cy="8.3" r="0.9" fill="#fff"/>',
         'plus'     => '<path d="M12 5v14M5 12h14" stroke-linecap="round"/>',
         'trash'    => '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" stroke-linecap="round" stroke-linejoin="round"/>',
         'copy'     => '<rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" stroke-linecap="round"/>',
@@ -231,7 +232,7 @@ function ui_icon(string $name): string
         'spark'    => '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" stroke-linecap="round"/>',
     ];
     $svg = $paths[$name] ?? $paths['info'];
-    $stroked = !in_array($name, ['logo', 'linkedin'], true);
+    $stroked = !in_array($name, ['logo', 'linkedin', 'instagram'], true);
     return '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"'
         . ($stroked ? ' fill="none" stroke="currentColor" stroke-width="1.6"' : '')
         . '>' . $svg . '</svg>';

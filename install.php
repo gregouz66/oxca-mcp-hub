@@ -31,6 +31,21 @@ if (!is_file(__DIR__ . '/config.php')) {
 
 require __DIR__ . '/app/bootstrap.php';
 
+/** storage/ est-il inscriptible ? (dépôt des médias, sessions, journaux) */
+function install_storage_writable(): bool
+{
+    $dir = __DIR__ . '/storage';
+    if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+        return false;
+    }
+    $probe = $dir . '/.probe-' . bin2hex(random_bytes(4));
+    if (@file_put_contents($probe, 'x') === false) {
+        return false;
+    }
+    @unlink($probe);
+    return true;
+}
+
 /* ---------------------------------------------------------- Diagnostics */
 $checks = [
     ['PHP 8.1 ou plus (actuel : ' . PHP_VERSION . ')', PHP_VERSION_ID >= 80100],
@@ -39,6 +54,10 @@ $checks = [
     ['Extension curl', extension_loaded('curl')],
     ['APP_KEY définie (64 caractères hexadécimaux)', strlen((string) APP_KEY) === 64 && ctype_xdigit((string) APP_KEY)],
     ['APP_URL définie sans slash final', APP_URL !== '' && !str_ends_with(APP_URL, '/')],
+    // Instagram télécharge les images à publier depuis ce serveur : il faut
+    // pouvoir les y déposer, et savoir les convertir au format qu'il exige.
+    ['Répertoire storage/ inscriptible (dépôt des images à publier)', install_storage_writable()],
+    ['Extension gd — conversion des images pour Instagram (facultatif)', extension_loaded('gd')],
 ];
 
 $dbError   = null;
@@ -52,7 +71,14 @@ try {
     $checks[] = ['Connexion à la base « ' . DB_NAME . ' »', false];
 }
 
-$allOk = !in_array(false, array_column($checks, 1), true);
+// Les contrôles marqués « facultatif » n'empêchent pas l'installation : ils
+// signalent une fonctionnalité dégradée, pas une application inutilisable.
+$allOk = true;
+foreach ($checks as [$label, $ok]) {
+    if (!$ok && !str_contains($label, '(facultatif)')) {
+        $allOk = false;
+    }
+}
 
 /* --------------------------------------------------------- Installation */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allOk && !$installed) {

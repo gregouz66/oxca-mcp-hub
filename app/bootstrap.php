@@ -44,7 +44,11 @@ require __DIR__ . '/auth.php';
 require __DIR__ . '/models.php';
 require __DIR__ . '/ui.php';
 require __DIR__ . '/mcp/server.php';
+require __DIR__ . '/http.php';
+require __DIR__ . '/media.php';
+require __DIR__ . '/image.php';
 require __DIR__ . '/mcp/linkedin.php';
+require __DIR__ . '/mcp/instagram.php';
 
 if (!defined('OXCA_NO_SESSION')) {
     $lifetime = 60 * 60 * 24 * 30; // 30 jours
