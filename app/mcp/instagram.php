@@ -21,6 +21,14 @@
 
 /* ------------------------------------------------------------ Constantes */
 
+// Une instance installée avant l'arrivée de ce connecteur a un config.php qui
+// ignore tout d'Instagram : sans ces valeurs de repli, la seule ouverture de la
+// page d'un connecteur serait une erreur fatale. Elles n'écrasent jamais une
+// valeur déjà définie dans config.php.
+defined('INSTAGRAM_API_VERSION')        || define('INSTAGRAM_API_VERSION', 'v26.0');
+defined('INSTAGRAM_DEFAULT_APP_ID')     || define('INSTAGRAM_DEFAULT_APP_ID', '');
+defined('INSTAGRAM_DEFAULT_APP_SECRET') || define('INSTAGRAM_DEFAULT_APP_SECRET', '');
+
 /** Hôte de l'API pour le chemin « Instagram Login ». */
 const IG_API_HOST = 'https://graph.instagram.com';
 
@@ -228,11 +236,14 @@ function ig_refresh_if_due(array $config, array $settings): array
         return $settings;
     }
     $expiresAt = strtotime($settings['token_expires_at'] . ' UTC');
-    $obtained  = strtotime(($settings['token_obtained_at'] ?? $settings['token_expires_at']) . ' UTC');
     if ($expiresAt === false || $expiresAt < time()) {
         return $settings; // expiré : seule une reconnexion peut aider
     }
-    // Trop récent pour être rafraîchi, ou encore loin de l'échéance.
+    // Meta refuse de rafraîchir un token de moins de 24 h. Une date d'obtention
+    // absente ne doit pas bloquer le renouvellement à jamais : on tente, et un
+    // refus est sans conséquence (le token en place est conservé).
+    $obtained = isset($settings['token_obtained_at'])
+        ? strtotime($settings['token_obtained_at'] . ' UTC') : false;
     if ($obtained !== false && $obtained > time() - 86400) {
         return $settings;
     }
@@ -579,12 +590,6 @@ function ig_tool_publish_carousel(array $settings, array $args): array
             $altText = ig_arg_text($item['alt_text'] ?? null, 'alt_text');
             $media   = ig_resolve_image($settings, $item, $label, $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
 
-            // L'image est désormais sur le disque : rien ne justifie de garder
-            // son encodage en mémoire pendant qu'on traite les suivantes.
-            // Seule la charge utile est libérée, le reste de l'élément a déjà
-            // été lu ci-dessus.
-            unset($item['image_base64'], $items[$i]);
-
             foreach ($media['notes'] as $note) {
                 $notes[] = ucfirst($label) . ' : ' . $note;
             }
@@ -599,6 +604,14 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         }
 
         // Chaque enfant doit être prêt : créer le parent trop tôt échoue.
+        foreach ($children as $childId) {
+            ig_container_await($settings, $childId, $deadline, $children, true);
+        }
+    }
+
+    // Sur une reprise, les enfants viennent de l'appelant : rien ne garantit
+    // qu'Instagram a fini de les traiter, et créer le parent trop tôt échoue.
+    if (($args['children'] ?? []) !== []) {
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
@@ -653,7 +666,9 @@ function ig_tool_profile(array $settings): array
         '- Identifiant : ' . $identity['ig_user_id'],
         '- Token valable jusqu\'au : ' . ($settings['token_expires_at'] ?? '—') . ' UTC',
     ];
-    return mcp_tool_result(implode("\n", $lines), $identity);
+    // L'outputSchema annonce des entiers : mieux vaut omettre un compteur
+    // qu'Instagram n'a pas renvoyé que de le déclarer nul.
+    return mcp_tool_result(implode("\n", $lines), array_filter($identity, fn ($v) => $v !== null));
 }
 
 function ig_tool_publishing_limit(array $settings): array

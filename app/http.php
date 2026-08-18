@@ -153,12 +153,18 @@ function http_download_limited(
 ): string {
     http_guard_public_url($url, $label);
 
+    // Le contrôle par saut n'existe qu'à partir de PHP 8.2 / libcurl 7.80, et
+    // il est inopérant derrière un proxy sortant. Sans lui, une redirection
+    // pourrait mener vers le réseau interne sans être vue : on préfère alors ne
+    // pas suivre les redirections du tout.
+    $perHopGuard = defined('CURLOPT_PREREQFUNCTION') && !http_proxy_configured();
+
     $abort = '';
     $ch    = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER  => true,
         CURLOPT_TIMEOUT         => $timeout,
-        CURLOPT_FOLLOWLOCATION  => true,
+        CURLOPT_FOLLOWLOCATION  => $perHopGuard,
         CURLOPT_MAXREDIRS       => 3,
         CURLOPT_PROTOCOLS       => CURLPROTO_HTTP | CURLPROTO_HTTPS,
         CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
@@ -177,7 +183,7 @@ function http_download_limited(
     // saut (PHP 8.2+ / libcurl 7.80+ ; ailleurs, seule l'URL initiale est vue).
     // Inapplicable derrière un proxy sortant : l'adresse vue serait celle du
     // proxy — c'est alors le contrôle sur l'URL initiale qui protège.
-    if (defined('CURLOPT_PREREQFUNCTION') && !http_proxy_configured()) {
+    if ($perHopGuard) {
         curl_setopt($ch, CURLOPT_PREREQFUNCTION, static function ($ch, $destIp) use (&$abort, $label): int {
             try {
                 http_guard_public_ip((string) $destIp, $label);

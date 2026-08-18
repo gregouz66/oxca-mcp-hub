@@ -99,3 +99,36 @@ test('la transparence d\'un PNG devient du blanc, jamais du noir', function () u
     assert_true($rgb['red'] > 240 && $rgb['green'] > 240 && $rgb['blue'] > 240,
         'le fond devrait être blanc, obtenu rgb(' . $rgb['red'] . ',' . $rgb['green'] . ',' . $rgb['blue'] . ')');
 });
+
+test('la transparence reste blanche même quand l\'image est redimensionnée', function () use ($spec) {
+    // Le chemin sans redimensionnement était déjà couvert ; c'est celui avec
+    // réduction, agrandissement ou marges qui noircissait le fond.
+    foreach ([[3000, 3000], [200, 200], [2100, 900]] as [$w, $h]) {
+        $im = imagecreatetruecolor($w, $h);
+        imagesavealpha($im, true);
+        imagealphablending($im, false);
+        imagefill($im, 0, 0, imagecolorallocatealpha($im, 0, 0, 0, 127));
+        ob_start();
+        imagepng($im);
+        imagedestroy($im);
+        $png = (string) ob_get_clean();
+
+        $out  = image_prepare($png, $spec, 'pad', 'image');
+        $jpeg = imagecreatefromstring($out['bytes']);
+        $rgb  = imagecolorsforindex($jpeg, imagecolorat($jpeg, (int) (imagesx($jpeg) / 2), (int) (imagesy($jpeg) / 2)));
+        imagedestroy($jpeg);
+        assert_true(
+            $rgb['red'] > 240 && $rgb['green'] > 240 && $rgb['blue'] > 240,
+            "{$w}×{$h} : fond rgb({$rgb['red']},{$rgb['green']},{$rgb['blue']}) au lieu de blanc"
+        );
+    }
+});
+
+test('les orientations EXIF en miroir tournent dans le bon sens', function () {
+    // 6 et 8 sont les cas courants d'une photo prise à la verticale ; 5 et 7
+    // sont leurs variantes en miroir et tournent à l'opposé. Les intervertir
+    // sortait l'image à 180° de la bonne.
+    $source = file_get_contents(__DIR__ . '/../app/image.php');
+    assert_contains('6, 7    => -90', $source);
+    assert_contains('5, 8    => 90', $source);
+});

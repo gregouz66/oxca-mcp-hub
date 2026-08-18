@@ -165,7 +165,9 @@ function media_self_test(): array
 
     if ($body === false) {
         return ['ok' => false, 'detail' => $detail, 'message' => 'Le serveur n\'a pas pu joindre sa propre URL publique ('
-            . $error . '). Vérifiez qu\'APP_URL correspond bien à l\'adresse publique du site.'];
+            . $error . '). Vérifiez qu\'APP_URL correspond bien à l\'adresse publique du site, et que le pare-feu'
+            . ' laisse sortir les requêtes HTTPS. Sur un serveur de développement mono-processus, ce test ne peut'
+            . ' pas aboutir : il demande de servir une seconde requête pendant celle-ci.'];
     }
     if ($status >= 300 && $status < 400) {
         return ['ok' => false, 'detail' => $detail, 'message' => 'L\'URL du média répond par une redirection (HTTP ' . $status

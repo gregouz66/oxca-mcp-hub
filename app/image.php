@@ -104,6 +104,9 @@ function image_prepare(string $bytes, array $spec, string $fit, string $label): 
     if ($target !== $width) {
         $newHeight = max(1, (int) round($height * $target / $width));
         $resized   = imagecreatetruecolor($target, $newHeight);
+        // Un canevas truecolor naît noir : sans ce fond blanc, les zones
+        // transparentes d'un PNG ressortiraient en noir après réduction.
+        imagefilledrectangle($resized, 0, 0, $target, $newHeight, imagecolorallocate($resized, 255, 255, 255));
         imagecopyresampled($resized, $im, 0, 0, 0, 0, $target, $newHeight, $width, $height);
         imagedestroy($im);
         $im     = $resized;
@@ -237,10 +240,12 @@ function image_apply_exif_orientation($im, string $bytes, array &$notes)
     if (in_array($orientation, [2, 4, 5, 7], true) && function_exists('imageflip')) {
         imageflip($im, IMG_FLIP_HORIZONTAL);
     }
+    // 6 et 8 sont les cas courants (photo prise à la verticale) ; 5 et 7 sont
+    // leurs variantes en miroir, et tournent dans l'autre sens.
     $angle = match ($orientation) {
         3, 4    => 180,
-        5, 6    => -90,
-        7, 8    => 90,
+        6, 7    => -90,
+        5, 8    => 90,
         default => 0,
     };
     if ($angle !== 0) {

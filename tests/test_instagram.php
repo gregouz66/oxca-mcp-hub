@@ -682,3 +682,60 @@ test('aucun argument hostile ne provoque de plantage ni d\'appel détourné', fu
     }
     http_real();
 });
+
+test('le connecteur fonctionne sur une instance dont le config.php ignore Instagram', function () {
+    // Une instance installée avant ce connecteur n'a aucune constante
+    // INSTAGRAM_* : sans valeurs de repli, ouvrir la page d'un connecteur
+    // Instagram serait une erreur fatale.
+    foreach (['INSTAGRAM_API_VERSION', 'INSTAGRAM_DEFAULT_APP_ID', 'INSTAGRAM_DEFAULT_APP_SECRET'] as $constant) {
+        assert_true(defined($constant), "constante non définie : $constant");
+    }
+    assert_contains('v', INSTAGRAM_API_VERSION);
+    assert_contains('instagram.com/oauth/authorize', instagram_oauth_url([], 'x'));
+});
+
+test('une reprise de carrousel attend que les enfants fournis soient prêts', function () {
+    // Sur une reprise, rien ne garantit qu'Instagram a fini de traiter les
+    // enfants : créer le parent trop tôt échoue avec un message obscur.
+    $vus = [];
+    http_fake_fn(function ($m, $u) use (&$vus) {
+        if ($m === 'GET' && preg_match('#/v[\d.]+/(C\d)\?#', $u, $match)) {
+            $vus[] = $match[1];
+            return [200, [], ['status_code' => 'FINISHED']];
+        }
+        if ($m === 'POST' && str_contains($u, 'media_publish')) {
+            return [200, [], ['id' => 'M']];
+        }
+        if ($m === 'POST' && str_contains($u, '/media')) {
+            return [200, [], ['id' => 'P']];
+        }
+        return [200, [], ['status_code' => 'FINISHED', 'permalink' => '']];
+    });
+    ig_tool_publish_carousel(fixture_ig_settings(), ['children' => ['C1', 'C2'], 'caption' => 'Reprise']);
+    assert_eq(['C1', 'C2'], $vus, 'chaque enfant fourni doit être vérifié avant de créer le parent');
+    http_real();
+});
+
+test('le profil n\'annonce pas d\'entier quand Instagram n\'a rien renvoyé', function () {
+    http_fake(['GET /me' => [200, [], ['user_id' => '1', 'username' => 'x', 'account_type' => 'BUSINESS']]]);
+    $structured = ig_tool_profile(fixture_ig_settings())['structuredContent'];
+    // followers_count et media_count sont déclarés « integer » dans
+    // l'outputSchema : absents vaut mieux que nuls.
+    assert_false(array_key_exists('followers_count', $structured));
+    assert_false(array_key_exists('media_count', $structured));
+    assert_eq('x', $structured['username']);
+    http_real();
+});
+
+test('un jeton sans date d\'obtention reste renouvelable', function () {
+    // Le repli sur la date d'expiration — dans le futur — gelait le
+    // renouvellement pour toujours.
+    [$config] = fixture_config('instagram', [
+        'app_id' => 'A', 'access_token' => 'VIEUX', 'ig_user_id' => '1', 'username' => 'x',
+        'token_expires_at' => gmdate('Y-m-d H:i:s', time() + 5 * 86400),
+    ]);
+    http_fake(['GET /refresh_access_token' => [200, [], ['access_token' => 'NEUF', 'expires_in' => 5183944]]]);
+    $fresh = ig_refresh_if_due($config, config_settings($config));
+    assert_eq('NEUF', $fresh['access_token']);
+    http_real();
+});

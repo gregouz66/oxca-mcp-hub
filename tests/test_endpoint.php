@@ -12,10 +12,15 @@ group('Bout en bout — serveur HTTP réel');
 $root = dirname(__DIR__);
 $host = parse_url(APP_URL, PHP_URL_HOST) . ':' . (parse_url(APP_URL, PHP_URL_PORT) ?: 80);
 
+// Plusieurs travailleurs sont nécessaires : l'auto-diagnostic média fait une
+// requête du serveur vers lui-même, ce qu'un serveur intégré mono-processus
+// ne peut pas servir pendant qu'il traite la requête d'origine.
 $server = proc_open(
     ['php', '-S', $host, '-t', $root],
     [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
-    $pipes
+    $pipes,
+    null,
+    array_merge(getenv(), ['PHP_CLI_SERVER_WORKERS' => '4'])
 );
 
 // Attente de disponibilité : le serveur met quelques dizaines de ms à écouter.
@@ -195,6 +200,47 @@ test('config.php n\'est jamais servi', function () {
     assert_not_contains('DB_PASS', $body);
     assert_not_contains('APP_KEY', $body);
     assert_not_contains(APP_KEY, $body);
+});
+
+test('le bouton d\'auto-diagnostic média est bien branché sur la page connecteur', function () {
+    // Ce hook a déjà été déclaré sans être appelé : seule une requête réelle
+    // sur connector.php prouve que le bouton fait quelque chose.
+    [$config, $grant] = fixture_config('instagram', fixture_ig_settings());
+    $user = user_by_id((int) $config['owner_id']);
+
+    $sid = 'e2eaction' . $config['id'];
+    file_put_contents(dirname(__DIR__) . '/storage/sessions/sess_' . $sid,
+        'uid|i:' . $user['id'] . ';csrf|s:5:"tcsrf";');
+
+    [$status, $headers] = e2e('POST', base_url('/connector.php'),
+        http_build_query(['id' => $config['id'], 'action' => 'media_test', 'csrf' => 'tcsrf']),
+        ['Content-Type: application/x-www-form-urlencoded', 'Cookie: oxcahub=' . $sid]);
+
+    assert_eq(302, $status, 'l\'action doit rediriger vers la page du connecteur');
+    assert_contains('/connector.php?id=' . $config['id'], $headers['location'] ?? '');
+
+    // Le résultat du diagnostic doit avoir été déposé en message flash.
+    $session = (string) file_get_contents(dirname(__DIR__) . '/storage/sessions/sess_' . $sid);
+    assert_contains('flash', $session, 'aucun message flash : le hook n\'a pas été appelé');
+    assert_true(
+        str_contains($session, 'servis publiquement') || str_contains($session, 'APP_URL'),
+        'le message flash ne provient pas du diagnostic média'
+    );
+});
+
+test('une action inconnue ne déclenche rien et revient à la page', function () {
+    [$config] = fixture_config('instagram', fixture_ig_settings());
+    $user = user_by_id((int) $config['owner_id']);
+    $sid  = 'e2eunknown' . $config['id'];
+    file_put_contents(dirname(__DIR__) . '/storage/sessions/sess_' . $sid,
+        'uid|i:' . $user['id'] . ';csrf|s:5:"tcsrf";');
+
+    [$status, $headers] = e2e('POST', base_url('/connector.php'),
+        http_build_query(['id' => $config['id'], 'action' => 'action_qui_nexiste_pas', 'csrf' => 'tcsrf']),
+        ['Content-Type: application/x-www-form-urlencoded', 'Cookie: oxcahub=' . $sid]);
+
+    assert_eq(302, $status);
+    assert_contains('/connector.php?id=' . $config['id'], $headers['location'] ?? '');
 });
 
 /* ------------------------------------------------------------- Arrêt */

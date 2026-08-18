@@ -100,6 +100,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('ok', 'Connecteur supprimé. Tous les accès et tokens associés sont révoqués.');
             redirect('/dashboard.php');
     }
+
+    // Actions supplémentaires propres au type de connecteur (diagnostics…).
+    if (isset($type['action_fn'])) {
+        $handled = ($type['action_fn'])($config, $action);
+        if ($handled !== null) {
+            flash($handled[0], $handled[1]);
+        }
+    }
     redirect($back);
 }
 
