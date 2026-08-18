@@ -583,7 +583,7 @@ test('un carrousel dont les images cumulées épuiseraient la mémoire est refus
     $part  = str_repeat('A', 15000000);
     $items = array_fill(0, 5, ['image_base64' => $part]);
 
-    $e = assert_throws(fn () => ig_check_total_payload($items), 'totalisent environ', McpToolError::class);
+    $e = assert_throws(fn () => ig_check_total_payload($items), 'totalisent 56,3 Mo', McpToolError::class);
     assert_contains('image_url', $e->getMessage());
 
     // Deux images de la même taille restent sous le plafond.
@@ -745,26 +745,74 @@ test('un jeton sans date d\'obtention reste renouvelable', function () {
     http_real();
 });
 
-test('une URL qui redirige est ré-hébergée, jamais transmise telle quelle', function () {
-    // Nous suivons la redirection pour valider l'image ; Instagram, lui, ne la
-    // suit pas forcément. Transmettre l'URL de départ reviendrait à valider une
-    // image et à en faire publier une autre.
-    $jpeg = fixture_jpeg(1080, 1080);
-    $chemin = sys_get_temp_dir() . '/redirect-test-' . random_hex(4) . '.jpg';
-    file_put_contents($chemin, $jpeg);
+test('une URL qui redirige n\'est jamais transmise telle quelle', function () {
+    // Nous suivons la redirection pour valider l'image ; Instagram ne la suit
+    // pas forcément. Transmettre l'URL de départ reviendrait à valider une
+    // image et à en faire publier une autre — ou aucune.
+    $conforme = image_inspect(fixture_jpeg(1080, 1080), 'image');
+    $url      = 'https://cdn.example.com/photo.jpg';
 
-    // http_download_limited signale les redirections suivies ; on simule ici
-    // son retour pour éprouver la décision de ré-hébergement.
-    $info = ['redirects' => 2, 'effective_url' => 'https://cdn.example.com/vraie.jpg'];
-    assert_true(($info['redirects'] ?? 0) > 0, 'garde-fou du test');
-    @unlink($chemin);
+    assert_true(ig_url_usable_as_is($conforme, ['redirects' => 0], $url),
+        'une image conforme servie sans redirection peut être transmise telle quelle');
+    assert_false(ig_url_usable_as_is($conforme, ['redirects' => 1], $url),
+        'une seule redirection doit suffire à imposer le ré-hébergement');
+    assert_false(ig_url_usable_as_is($conforme, [], $url),
+        'sans information sur les redirections, on ré-héberge par précaution');
 
-    // Contrôle direct de la règle : une image conforme mais redirigée doit
-    // être déposée sur le hub.
-    $staged = ig_stage_bytes($jpeg, 'image', 'reject');
-    assert_contains(base_url('/media.php?k='), $staged['url']);
-    media_forget($staged['key']);
+    // Les autres motifs de ré-hébergement restent en place.
+    assert_false(ig_url_usable_as_is($conforme, ['redirects' => 0], 'https://exemple.com/été.jpg'),
+        'une URL non ASCII doit être ré-hébergée');
+    assert_false(ig_url_usable_as_is(image_inspect(fixture_png(1080, 1080), 'image'), ['redirects' => 0], $url),
+        'un PNG doit être converti puis ré-hébergé');
+    assert_false(ig_url_usable_as_is(image_inspect(fixture_jpeg(2100, 900), 'image'), ['redirects' => 0], $url),
+        'un rapport hors bornes doit être ré-hébergé');
+    assert_false(ig_url_usable_as_is(image_inspect(fixture_jpeg(200, 200), 'image'), ['redirects' => 0], $url),
+        'une image trop petite doit être ré-hébergée');
 });
+
+test('un booléen envoyé en texte n\'est pas pris pour vrai', function () {
+    // « false » est une chaîne non vide : !empty() la tient pour vraie, et la
+    // publication se retrouverait marquée « générée par IA » à tort.
+    foreach (['false', 'False', '0', '', 'non', '  false  '] as $faux) {
+        $params = [];
+        ig_apply_common_params($params, ['is_ai_generated' => $faux]);
+        assert_false(isset($params['is_ai_generated']), 'valeur « ' . $faux .' » prise pour vraie');
+    }
+    foreach ([true, 'true', '1', 1, 'oui'] as $vrai) {
+        $params = [];
+        ig_apply_common_params($params, ['is_ai_generated' => $vrai]);
+        assert_eq('true', $params['is_ai_generated'] ?? null, 'valeur « ' . var_export($vrai, true) . ' » ignorée');
+    }
+});
+
+test('le message de reprise annonce l\'attente réellement consentie', function () {
+    // Le budget s'adapte au temps d'exécution restant : annoncer 25 s en dur
+    // quand on n'a attendu que 3 s serait faux.
+    http_fake(['GET /' => [200, [], ['status_code' => 'IN_PROGRESS']]]);
+    $e = assert_throws(
+        fn () => ig_container_await(fixture_ig_settings(), 'X1', time() + 2, ['X1']),
+        'instagram_publish_container',
+        McpToolError::class
+    );
+    assert_false(str_contains($e->getMessage(), 'après ' . IG_POLL_BUDGET . ' s'),
+        'le budget nominal ne doit pas être annoncé quand il n\'a pas été consommé');
+    http_real();
+});
+
+test('une reprise hors bornes est refusée avant d\'attendre quoi que ce soit', function () {
+    // Attendre d'abord ferait proposer de reprendre un carrousel impossible.
+    http_fake_fn(function () {
+        throw new RuntimeException('aucun appel ne devait partir');
+    });
+    assert_throws(
+        fn () => ig_tool_publish_carousel(fixture_ig_settings(), ['children' => ['C1']]),
+        'entre 2 et 10',
+        McpToolError::class
+    );
+    assert_eq(0, count(http_calls()), 'aucune requête ne doit précéder le contrôle des bornes');
+    http_real();
+});
+
 
 test('un compte non professionnel est nommé pour ce qu\'il est', function () {
     // Instagram renvoie « id » (propre à l'app) sans « user_id » : enregistrer
@@ -775,15 +823,6 @@ test('un compte non professionnel est nommé pour ce qu\'il est', function () {
     http_real();
 });
 
-test('une reprise avec un seul conteneur est refusée avant l\'appel', function () {
-    http_fake(['GET /' => [200, [], ['status_code' => 'FINISHED']]]);
-    assert_throws(
-        fn () => ig_tool_publish_carousel(fixture_ig_settings(), ['children' => ['C1']]),
-        'entre 2 et 10',
-        McpToolError::class
-    );
-    http_real();
-});
 
 test('un quota non renvoyé par Instagram est signalé comme une valeur de repli', function () {
     http_fake(['GET /content_publishing_limit' => [200, [], ['data' => [['quota_usage' => 3]]]]]);

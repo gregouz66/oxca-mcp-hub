@@ -432,8 +432,9 @@ function instagram_tool_catalog(array $settings): array
                     'used'      => ['type' => 'integer', 'description' => 'Publications effectuées sur les 24 dernières heures.'],
                     'total'     => ['type' => 'integer', 'description' => 'Quota total sur 24 heures.'],
                     'remaining' => ['type' => 'integer', 'description' => 'Publications encore possibles.'],
+                    'quota_reported' => ['type' => 'boolean', 'description' => 'Vrai si Instagram a renvoyé la valeur du quota ; faux si c\'est la borne prudente par défaut qui est affichée.'],
                 ],
-                'required' => ['used', 'total', 'remaining'],
+                'required' => ['used', 'total', 'remaining', 'quota_reported'],
             ],
             'available' => $connected,
             'requires'  => $connected ? [] : [$needConnection],
@@ -622,6 +623,13 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         }
     }
 
+    // Les bornes se contrôlent avant toute attente : proposer de reprendre un
+    // carrousel qui ne peut pas exister serait un mauvais conseil.
+    if (count($children) < IG_CAROUSEL_MIN || count($children) > IG_CAROUSEL_MAX) {
+        throw new McpToolError('Un carrousel Instagram comporte entre ' . IG_CAROUSEL_MIN . ' et '
+            . IG_CAROUSEL_MAX . ' images ; ' . count($children) . ' conteneur(s) ont été fournis dans « children ».');
+    }
+
     // Sur une reprise, les enfants viennent de l'appelant : rien ne garantit
     // qu'Instagram a fini de les traiter, et créer le parent trop tôt échoue.
     if (($args['children'] ?? []) !== []) {
@@ -629,11 +637,6 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
-    }
-
-    if (count($children) < IG_CAROUSEL_MIN || count($children) > IG_CAROUSEL_MAX) {
-        throw new McpToolError('Un carrousel Instagram comporte entre ' . IG_CAROUSEL_MIN . ' et '
-            . IG_CAROUSEL_MAX . ' images ; ' . count($children) . ' conteneur(s) ont été fournis dans « children ».');
     }
 
     $params = ['media_type' => 'CAROUSEL', 'children' => implode(',', $children)];
@@ -796,7 +799,8 @@ function ig_container_create(array $settings, array $params): string
  */
 function ig_container_await(array $settings, string $containerId, int $deadline, array $ids, bool $isChild = false): void
 {
-    $delay = 1;
+    $depart = time();
+    $delay  = 1;
     while (true) {
         [$status, , $data] = ig_graph($settings, 'GET', '/' . rawurlencode($containerId),
             ['fields' => 'status_code,status']);
@@ -818,7 +822,7 @@ function ig_container_await(array $settings, string $containerId, int $deadline,
             throw new McpToolError('Le conteneur a expiré avant d\'être publié (durée de vie : 24 heures). Relancez la publication.');
         }
         if (time() + $delay >= $deadline) {
-            throw new McpToolError(ig_resume_message($ids, $isChild));
+            throw new McpToolError(ig_resume_message($ids, $isChild, max(1, time() - $depart)));
         }
         sleep($delay);
         $delay = min($delay + 1, 3);
@@ -826,15 +830,15 @@ function ig_container_await(array $settings, string $containerId, int $deadline,
 }
 
 /** Message de reprise quand le budget d'attente est épuisé. */
-function ig_resume_message(array $ids, bool $isChild): string
+function ig_resume_message(array $ids, bool $isChild, int $attendu): string
 {
     if ($isChild) {
-        return 'Instagram traite encore les images du carrousel après ' . IG_POLL_BUDGET
+        return 'Instagram traite encore les images du carrousel après ' . $attendu
             . ' s. Rien n\'est perdu : relancez instagram_publish_carousel avec children = ['
             . implode(', ', array_map(fn ($id) => '"' . $id . '"', $ids))
             . '] (conteneurs valables 24 h) pour terminer sans renvoyer les images.';
     }
-    return 'Instagram traite encore le média après ' . IG_POLL_BUDGET
+    return 'Instagram traite encore le média après ' . $attendu
         . ' s et la publication n\'est pas faite. Rien n\'est perdu : appelez instagram_publish_container avec creation_id = "'
         . implode('', $ids) . '" (conteneur valable 24 h) pour la terminer.';
 }
@@ -893,7 +897,7 @@ function ig_apply_common_params(array &$params, array $args): void
     if ($locationId !== '') {
         $params['location_id'] = $locationId;
     }
-    if (!empty($args['is_ai_generated'])) {
+    if (ig_arg_bool($args['is_ai_generated'] ?? null)) {
         $params['is_ai_generated'] = 'true';
     }
 
@@ -967,9 +971,9 @@ function ig_resolve_image(array $settings, array $args, string $label, string $f
         // Refus avant décodage : inutile de matérialiser en mémoire un contenu
         // qu'on rejettera de toute façon (base64 pèse ~4/3 des octets réels).
         if (strlen($base64) > IG_BASE64_MAX_CHARS) {
-            throw new McpToolError("« image_base64 » est trop volumineux pour « $label » : environ "
-                . round(strlen($base64) * 3 / 4 / 1048576) . ' Mo, alors que cet hébergement ne peut en traiter que '
-                . round(IG_BASE64_MAX_CHARS * 3 / 4 / 1048576) . ' Mo par image. Réduisez l\'image avant de l\'envoyer, ou publiez-la par « image_url ».');
+            throw new McpToolError("« image_base64 » est trop volumineux pour « $label » : "
+                . image_format_bytes((int) (strlen($base64) * 3 / 4)) . ', alors que cet hébergement ne peut en traiter que '
+                . image_format_bytes((int) (IG_BASE64_MAX_CHARS * 3 / 4)) . ' par image. Réduisez l\'image avant de l\'envoyer, ou publiez-la par « image_url ».');
         }
         $bytes = base64_decode(preg_replace('/\s+/', '', $base64) ?? $base64, true);
         if ($bytes === false || $bytes === '') {
@@ -994,28 +998,35 @@ function ig_resolve_image(array $settings, array $args, string $label, string $f
     $bytes = http_download_limited($url, 20000000, 'image_url', 30,
         'L\'image téléchargée dépasse 20 Mo : trop lourde pour être préparée.', $transfer);
 
-    if ($stage === 'auto') {
-        // Une image déjà conforme n'a pas besoin d'être ré-hébergée : on
-        // transmet l'URL d'origine et on s'épargne un dépôt.
-        //
-        // Sauf si elle nous a été servie au terme d'une redirection : nous
-        // l'avons suivie, Instagram ne le fera pas forcément. Transmettre
-        // l'URL de départ reviendrait à valider une image et à en faire
-        // publier une autre — ou aucune.
-        $info = image_inspect($bytes, $label);
-        $spec = ig_image_spec();
-        $ok = (int) ($transfer['redirects'] ?? 0) === 0
-            && $info['mime'] === $spec['mime']
-            && $info['size'] <= $spec['max_bytes']
-            && $info['width'] >= $spec['min_width'] && $info['width'] <= $spec['max_width']
-            && $info['ratio'] >= $spec['min_ratio'] && $info['ratio'] <= $spec['max_ratio']
-            && !preg_match('/[^\x21-\x7E]/', $url);
-        if ($ok) {
-            return ['url' => $url, 'key' => null, 'notes' => []];
-        }
+    if ($stage === 'auto' && ig_url_usable_as_is(image_inspect($bytes, $label), $transfer ?? [], $url)) {
+        return ['url' => $url, 'key' => null, 'notes' => []];
     }
 
     return ig_stage_bytes($bytes, $label, $fit);
+}
+
+/**
+ * L'URL fournie peut-elle être transmise telle quelle à Instagram ?
+ *
+ * Oui seulement si l'image qu'elle sert est déjà conforme, si l'URL est en
+ * ASCII pur (Meta refuse le reste), et si elle a répondu SANS redirection :
+ * nous suivons les redirections pour valider l'image, Instagram ne le fait pas
+ * forcément. Transmettre l'URL de départ reviendrait alors à valider une image
+ * et à en faire publier une autre — ou aucune.
+ */
+function ig_url_usable_as_is(array $info, array $transfer, string $url): bool
+{
+    // À défaut d'information sur les redirections, on ré-héberge : mieux vaut
+    // un dépôt superflu qu'une publication qui échoue chez Instagram.
+    if (!isset($transfer['redirects']) || (int) $transfer['redirects'] !== 0) {
+        return false;
+    }
+    $spec = ig_image_spec();
+    return $info['mime'] === $spec['mime']
+        && $info['size'] <= $spec['max_bytes']
+        && $info['width'] >= $spec['min_width'] && $info['width'] <= $spec['max_width']
+        && $info['ratio'] >= $spec['min_ratio'] && $info['ratio'] <= $spec['max_ratio']
+        && !preg_match('/[^\x21-\x7E]/', $url);
 }
 
 /** Normalise des octets puis les dépose pour qu'Instagram vienne les chercher. */
@@ -1077,10 +1088,10 @@ function ig_check_total_payload(array $items): void
         }
     }
     if ($total > IG_BASE64_MAX_TOTAL_CHARS) {
-        throw new McpToolError('Les ' . count($items) . ' images du carrousel totalisent environ '
-            . round($total * 3 / 4 / 1048576) . ' Mo, au-delà des '
-            . round(IG_BASE64_MAX_TOTAL_CHARS * 3 / 4 / 1048576)
-            . ' Mo que cet hébergement peut traiter en une fois. Réduisez les images avant de les envoyer, ou publiez-les par « image_url » : Instagram les téléchargera alors directement, sans passer par la mémoire du serveur.');
+        throw new McpToolError('Les ' . count($items) . ' images du carrousel totalisent '
+            . image_format_bytes((int) ($total * 3 / 4)) . ', au-delà des '
+            . image_format_bytes((int) (IG_BASE64_MAX_TOTAL_CHARS * 3 / 4))
+            . ' que cet hébergement peut traiter en une fois. Réduisez les images avant de les envoyer, ou publiez-les par « image_url » : Instagram les téléchargera alors directement, sans passer par la mémoire du serveur.');
     }
 }
 
@@ -1091,6 +1102,21 @@ function ig_check_total_payload(array $items): void
  * un tableau passé en légende deviendrait la chaîne « Array » — et serait
  * publié tel quel sur Instagram.
  */
+/**
+ * Lit un argument booléen.
+ *
+ * Un client peut envoyer la chaîne « false », que !empty() tient pour vraie :
+ * une publication se retrouverait alors marquée « générée par IA » contre
+ * l'intention de l'utilisateur.
+ */
+function ig_arg_bool(mixed $value): bool
+{
+    if (is_string($value)) {
+        return !in_array(strtolower(trim($value)), ['', '0', 'false', 'non', 'no'], true);
+    }
+    return (bool) $value;
+}
+
 function ig_arg_text(mixed $value, string $key): string
 {
     if ($value === null) {
@@ -1193,7 +1219,7 @@ function ig_api_error(string $prefix, int $status, array $data): McpToolError
     $detail  = ig_error_text($data);
 
     $hint = match (true) {
-        $subcode === 2207052 => 'Instagram n\'a pas réussi à télécharger l\'image : l\'URL doit être publique, directe et sans redirection. Si vous avez fourni « image_url », essayez sans (le connecteur hébergera l\'image lui-même), et vérifiez qu\'aucune protection anti-robot ne bloque /media.php.',
+        $subcode === 2207052 => 'Instagram n\'a pas réussi à télécharger l\'image : l\'URL doit être publique, directe et sans redirection. Si vous avez fourni « image_url », relancez avec stage="always" pour que le connecteur héberge lui-même l\'image ; si l\'image venait déjà de ce connecteur, vérifiez qu\'aucune protection anti-robot ne bloque /media.php (bouton « Tester la publication média » sur la page du connecteur).',
         $subcode === 2207004 => 'Image trop lourde : la limite est de 8 Mo.',
         $subcode === 2207005 => 'Format d\'image non supporté : Instagram n\'accepte que le JPEG.',
         $subcode === 2207009 => 'Rapport d\'aspect refusé : Instagram n\'accepte que 4:5 à 1.91:1, et rejette au lieu de recadrer. Utilisez « fit »: « pad ».',
