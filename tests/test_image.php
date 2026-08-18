@@ -29,7 +29,25 @@ test('une image trop large est ramenée à 1440 px', function () use ($spec) {
     $out = image_prepare(fixture_png(3000, 3000), $spec, 'reject', 'image');
     assert_eq(1440, $out['width'], 'la largeur doit être bornée à 1440 px');
     assert_eq(1440, $out['height'], 'les proportions doivent être conservées');
-    assert_contains('redimensionnée', implode(' ', $out['notes']));
+    assert_contains('réduite à 1440', implode(' ', $out['notes']));
+});
+
+test('une image démesurément allongée n\'explose plus la mémoire', function () use ($spec) {
+    // Un fichier de quelques kilo-octets suffisait : compléter une image de
+    // 30000 × 2 en 1.91:1 demandait un canevas de 471 mégapixels, soit 1,8 Go.
+    // L'image est désormais ramenée au cadre utile avant d'être complétée.
+    $im = imagecreatetruecolor(30000, 2);
+    imagefilledrectangle($im, 0, 0, 30000, 2, imagecolorallocate($im, 180, 190, 200));
+    ob_start();
+    imagejpeg($im, null, 70);
+    imagedestroy($im);
+    $bande = (string) ob_get_clean();
+
+    $out = image_prepare($bande, $spec, 'pad', 'bande');
+    assert_true($out['width'] <= $spec['max_width'], 'largeur finale : ' . $out['width']);
+    $ratio = $out['width'] / $out['height'];
+    assert_true($ratio <= $spec['max_ratio'] + 0.01, 'rapport final : ' . $ratio);
+    assert_contains('format utile', implode(' ', $out['notes']));
 });
 
 test('une image trop étroite est agrandie à 320 px', function () use ($spec) {

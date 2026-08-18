@@ -21,15 +21,16 @@ const IMAGE_JPEG_QUALITIES = [90, 82, 74, 66, 58, 50];
  *
  * C'est la seule protection utile contre une « bombe de décompression » : un
  * JPEG uni de 4 Mo peut couvrir 256 mégapixels et occuper 1 Go une fois
- * décodé. Mesuré : environ 4 Mo de mémoire résidente par mégapixel — et cette
- * mémoire est allouée par GD, donc **invisible à memory_limit**, qui ne la
- * plafonne pas. Sans cette borne, le processus se fait tuer par le système
- * plutôt que d'échouer proprement.
+ * décodé. Cette mémoire est allouée par GD, donc **invisible à memory_limit**,
+ * qui ne la plafonne pas : sans borne, le processus se fait tuer par le
+ * système plutôt que d'échouer proprement.
  *
- * 32 mégapixels laissent passer toutes les photos d'appareils courants
- * (24 Mpx sur un capteur haut de gamme) pour environ 145 Mo de pointe.
+ * Mesuré sur ce code : environ 4 Mo de mémoire résidente par mégapixel pour
+ * le bitmap source, et jusqu'au double au moment d'un redimensionnement, où
+ * la source et sa réduction coexistent. 24 mégapixels — ce que produit un
+ * capteur haut de gamme — plafonnent ainsi autour de 230 Mo, mesurés.
  */
-const IMAGE_MAX_PIXELS = 32000000;
+const IMAGE_MAX_PIXELS = 24000000;
 
 /** GD est-il utilisable pour transcoder ? */
 function image_gd_available(): bool
@@ -118,9 +119,24 @@ function image_prepare(string $bytes, array $spec, string $fit, string $label): 
 
     $width  = imagesx($im);
     $height = imagesy($im);
-    $ratio  = $height > 0 ? $width / $height : 0.0;
 
-    // 1. Rapport d'aspect : la plateforme rejette, elle ne recadre pas.
+    // 1. Ramener l'image dans le cadre utile AVANT toute autre opération.
+    //
+    // Rien de publiable ne dépasse max_width de large, ni max_width/min_ratio
+    // de haut : au-delà, la plateforme réduirait de toute façon. Réduire ici
+    // évite surtout que l'étape suivante ne construise un canevas démesuré —
+    // compléter une image de 30000×2 en 1.91:1 demanderait 1,8 Go de mémoire
+    // pour un fichier de 8 Ko.
+    $maxHeight = (int) ceil($spec['max_width'] / $spec['min_ratio']);
+    if ($width > $spec['max_width'] || $height > $maxHeight) {
+        $facteur = min($spec['max_width'] / $width, $maxHeight / $height);
+        [$im, $width, $height] = image_scale($im, max(1, (int) round($width * $facteur)),
+            max(1, (int) round($height * $facteur)));
+        $notes[] = sprintf('réduite à %d × %d px, le format utile de la plateforme', $width, $height);
+    }
+
+    // 2. Rapport d'aspect : la plateforme rejette, elle ne recadre pas.
+    $ratio = $height > 0 ? $width / $height : 0.0;
     if ($ratio < $spec['min_ratio'] || $ratio > $spec['max_ratio']) {
         if ($fit !== 'pad') {
             imagedestroy($im);
@@ -130,23 +146,15 @@ function image_prepare(string $bytes, array $spec, string $fit, string $label): 
         $notes[] = sprintf('rapport ramené à %.2f:1 par ajout de marges blanches', $width / $height);
     }
 
-    // 2. Largeur : bornée des deux côtés, en conservant les proportions.
+    // 3. Largeur : bornée des deux côtés, en conservant les proportions.
     $target = min(max($width, (int) $spec['min_width']), (int) $spec['max_width']);
     if ($target !== $width) {
-        $newHeight = max(1, (int) round($height * $target / $width));
-        $resized   = imagecreatetruecolor($target, $newHeight);
-        // Un canevas truecolor naît noir : sans ce fond blanc, les zones
-        // transparentes d'un PNG ressortiraient en noir après réduction.
-        imagefilledrectangle($resized, 0, 0, $target, $newHeight, imagecolorallocate($resized, 255, 255, 255));
-        imagecopyresampled($resized, $im, 0, 0, 0, 0, $target, $newHeight, $width, $height);
-        imagedestroy($im);
-        $im     = $resized;
-        $notes[] = sprintf('redimensionnée de %d à %d px de large', $width, $target);
-        $width  = $target;
-        $height = $newHeight;
+        $avant = $width;
+        [$im, $width, $height] = image_scale($im, $target, max(1, (int) round($height * $target / $width)));
+        $notes[] = sprintf('redimensionnée de %d à %d px de large', $avant, $width);
     }
 
-    // 3. Encodage JPEG, qualité dégressive jusqu'à tenir sous la limite.
+    // 4. Encodage JPEG, qualité dégressive jusqu'à tenir sous la limite.
     $encoded = image_encode_jpeg_within($im, (int) $spec['max_bytes'], (int) $spec['min_width'], $width, $height, $notes);
     imagedestroy($im);
 
@@ -184,8 +192,7 @@ function image_encode_jpeg_within($im, int $maxBytes, int $minWidth, int $width,
 {
     // Fond blanc : le JPEG ne gère pas la transparence, et sans aplatissement
     // les zones transparentes ressortent en noir.
-    $flat = imagecreatetruecolor($width, $height);
-    imagefilledrectangle($flat, 0, 0, $width, $height, imagecolorallocate($flat, 255, 255, 255));
+    $flat = image_new_canvas($width, $height);
     imagecopy($flat, $im, 0, 0, 0, 0, $width, $height);
 
     // On réduit tant qu'il reste de la marge au-dessus de la largeur minimale
@@ -211,7 +218,7 @@ function image_encode_jpeg_within($im, int $maxBytes, int $minWidth, int $width,
         $width  = max($minWidth, (int) round($width * 0.8));
         $height = max(1, (int) round($height * $width / imagesx($flat)));
 
-        $smaller = imagecreatetruecolor($width, $height);
+        $smaller = image_new_canvas($width, $height);
         imagecopyresampled($smaller, $flat, 0, 0, 0, 0, $width, $height, imagesx($flat), imagesy($flat));
         imagedestroy($flat);
         $flat    = $smaller;
@@ -230,6 +237,20 @@ function image_format_bytes(int $bytes): string
     return rtrim(rtrim(number_format($bytes / 1000, 1, ',', ' '), '0'), ',') . ' Ko';
 }
 
+/**
+ * Redimensionne sur un canevas au fond blanc.
+ *
+ * Un canevas truecolor naît noir : sans ce fond, les zones transparentes d'un
+ * PNG ressortiraient en noir. Retourne [image, largeur, hauteur].
+ */
+function image_scale($im, int $newWidth, int $newHeight): array
+{
+    $canvas = image_new_canvas($newWidth, $newHeight);
+    imagecopyresampled($canvas, $im, 0, 0, 0, 0, $newWidth, $newHeight, imagesx($im), imagesy($im));
+    imagedestroy($im);
+    return [$canvas, $newWidth, $newHeight];
+}
+
 /** Complète l'image par des marges blanches pour ramener son rapport dans les bornes. */
 function image_pad_to_ratio($im, int $width, int $height, array $spec): array
 {
@@ -243,13 +264,42 @@ function image_pad_to_ratio($im, int $width, int $height, array $spec): array
         $newHeight = $height;
         $newWidth  = (int) round($height * $target);
     }
+    $newWidth  = max($newWidth, 1);
+    $newHeight = max($newHeight, 1);
 
-    $canvas = imagecreatetruecolor(max($newWidth, 1), max($newHeight, 1));
-    imagefilledrectangle($canvas, 0, 0, $newWidth, $newHeight, imagecolorallocate($canvas, 255, 255, 255));
+    // Filet de sécurité : l'appelant a déjà ramené l'image dans le cadre utile,
+    // donc ce canevas est petit. S'il ne l'était pas, mieux vaut un refus lisible
+    // qu'une allocation de plusieurs gigaoctets.
+    if ($newWidth * $newHeight > IMAGE_MAX_PIXELS) {
+        imagedestroy($im);
+        throw new McpToolError(sprintf(
+            'Compléter une image de %d × %d pixels pour atteindre le rapport %.2f:1 demanderait un canevas de %d × %d, trop grand pour ce serveur. Recadrez l\'image vous-même.',
+            $width, $height, $target, $newWidth, $newHeight
+        ));
+    }
+
+    $canvas = image_new_canvas($newWidth, $newHeight);
     imagecopy($canvas, $im, (int) (($newWidth - $width) / 2), (int) (($newHeight - $height) / 2), 0, 0, $width, $height);
     imagedestroy($im);
 
     return [$canvas, $newWidth, $newHeight];
+}
+
+/**
+ * Alloue un canevas blanc, en refusant proprement si la mémoire manque.
+ *
+ * imagecreatetruecolor() rend false plutôt que de lever : le laisser filer
+ * produirait une TypeError transformée en « Internal error » sans indice.
+ */
+function image_new_canvas(int $width, int $height)
+{
+    $canvas = @imagecreatetruecolor($width, $height);
+    if ($canvas === false) {
+        throw new McpToolError('Le serveur n\'a pas assez de mémoire pour traiter une image de '
+            . $width . ' × ' . $height . ' pixels. Réduisez ses dimensions avant de l\'envoyer.');
+    }
+    imagefilledrectangle($canvas, 0, 0, $width, $height, imagecolorallocate($canvas, 255, 255, 255));
+    return $canvas;
 }
 
 /**

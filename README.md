@@ -365,13 +365,14 @@ Les images sont fournies soit par `image_url` (URL publique directe), soit par
 n'est pas conforme (`stage: "auto"`, par défaut).
 
 > **Dimensions des images.** Une image est refusée au-delà de
-> **32 mégapixels**, quel que soit le poids du fichier. Ce n'est pas une
-> coquetterie : un JPEG uni de 4 Mo peut couvrir 256 mégapixels et occuper
-> **1 Go de mémoire** une fois décodé — mesuré à environ 4 Mo par mégapixel,
-> alloués par GD donc **hors du `memory_limit` de PHP**, qui ne les plafonne
-> pas. Sans cette borne, le processus se ferait tuer par le système au lieu
-> d'échouer proprement. La limite laisse passer toutes les photos d'appareils
-> courants (24 Mpx sur un capteur haut de gamme).
+> **24 mégapixels**, quel que soit le poids du fichier. Ce n'est pas une
+> coquetterie : un JPEG uni de 8 Ko peut couvrir 30000 × 2 pixels et, une fois
+> complété par des marges, réclamer **1,8 Go de mémoire**. Cette mémoire est
+> allouée par GD, donc **hors du `memory_limit` de PHP**, qui ne la plafonne
+> pas : sans borne, le processus se ferait tuer par le système au lieu
+> d'échouer proprement. Comptez environ 4 Mo par mégapixel, le double pendant
+> un redimensionnement — soit ~230 Mo à la limite, mesurés. Un capteur haut de gamme
+> produit 24 Mpx : les photos d'appareils courants passent donc toutes.
 
 > **Poids des envois en base64.** Décoder puis décompresser une image coûte
 > plusieurs fois sa taille en mémoire, et un mutualisé plafonne souvent à
