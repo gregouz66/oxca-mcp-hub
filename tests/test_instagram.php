@@ -813,3 +813,81 @@ test('la description de l\'outil ne promet pas ce que le code ne fait pas', func
     assert_contains('refusée', $image['description']);
     assert_contains('fit="pad"', $image['description']);
 });
+
+test('le budget d\'attente tient compte du temps d\'exécution restant', function () {
+    $maxInitial = ini_get('max_execution_time');
+    $requete    = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
+
+    try {
+        // Un mutualisé coupe souvent à 30 s : attendre 25 s alors que 20 sont
+        // déjà consommées ferait tuer le script en pleine attente, privant
+        // l'appelant de la réponse qui lui dit comment reprendre.
+        ini_set('max_execution_time', '30');
+
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true);
+        assert_eq(IG_POLL_BUDGET, ig_poll_deadline() - time(), 'requête qui démarre');
+
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 20;
+        assert_eq(5, ig_poll_deadline() - time(), '20 s déjà consommées sur 30');
+
+        $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 29;
+        assert_eq(3, ig_poll_deadline() - time(), 'plancher quand il ne reste presque rien');
+
+        // Sans limite (CLI, ou réglage désactivé), on garde le budget nominal.
+        ini_set('max_execution_time', '0');
+        assert_eq(IG_POLL_BUDGET, ig_poll_deadline() - time(), 'aucune limite d\'exécution');
+    } finally {
+        ini_set('max_execution_time', (string) $maxInitial);
+        if ($requete === null) {
+            unset($_SERVER['REQUEST_TIME_FLOAT']);
+        } else {
+            $_SERVER['REQUEST_TIME_FLOAT'] = $requete;
+        }
+    }
+});
+
+test('un carrousel n\'enchaîne pas deux budgets d\'attente complets', function () {
+    // Les enfants et le parent puisent dans la même enveloppe : deux budgets
+    // enchaînés dépasseraient le temps d'exécution alloué au script. On réduit
+    // ici le budget à son plancher pour mesurer sans attendre 25 s.
+    $maxInitial = ini_get('max_execution_time');
+    $requete    = $_SERVER['REQUEST_TIME_FLOAT'] ?? null;
+    ini_set('max_execution_time', '30');
+    $_SERVER['REQUEST_TIME_FLOAT'] = microtime(true) - 29; // → plancher de 3 s
+
+    http_fake_fn(function ($m, $u, $h, $b) {
+        $p = http_fake_params($u, $b);
+        if ($m === 'POST' && str_contains($u, '/media')) {
+            return [200, [], ['id' => isset($p['children']) ? 'P' : 'C1']];
+        }
+        return [200, [], ['status_code' => 'IN_PROGRESS']]; // jamais prêt
+    });
+
+    try {
+        $depart = microtime(true);
+        $e = assert_throws(
+            fn () => ig_tool_publish_carousel(fixture_ig_settings(), [
+                'items' => [
+                    ['image_base64' => base64_encode(fixture_jpeg(1080, 1080))],
+                    ['image_base64' => base64_encode(fixture_jpeg(1080, 1080))],
+                ],
+            ]),
+            'instagram_publish_carousel',
+            McpToolError::class
+        );
+        $ecoule = microtime(true) - $depart;
+
+        // Une seule enveloppe : très en deçà de deux budgets enchaînés.
+        assert_true($ecoule < 12, 'attente de ' . round($ecoule, 1) . ' s : deux budgets semblent enchaînés');
+        // Et l'échec doit rester exploitable : les conteneurs valent 24 h.
+        assert_contains('children = [', $e->getMessage());
+    } finally {
+        http_real();
+        ini_set('max_execution_time', (string) $maxInitial);
+        if ($requete === null) {
+            unset($_SERVER['REQUEST_TIME_FLOAT']);
+        } else {
+            $_SERVER['REQUEST_TIME_FLOAT'] = $requete;
+        }
+    }
+});

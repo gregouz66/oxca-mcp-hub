@@ -228,3 +228,25 @@ function fixture_ig_settings(array $extra = []): array
         'account_type'      => 'BUSINESS',
     ];
 }
+
+/**
+ * Injecte une orientation EXIF dans un JPEG, en insérant un segment APP1
+ * minimal (en-tête TIFF little-endian + une seule entrée IFD0).
+ * Permet d'éprouver le redressement des photos sans embarquer de fichier.
+ */
+function fixture_jpeg_with_orientation(string $jpeg, int $orientation): string
+{
+    $tiff = "II\x2A\x00\x08\x00\x00\x00"          // little-endian, IFD0 à l'offset 8
+        . "\x01\x00"                               // une entrée
+        . "\x12\x01"                               // tag 0x0112 = Orientation
+        . "\x03\x00"                               // type SHORT
+        . "\x01\x00\x00\x00"                       // un élément
+        . pack('v', $orientation) . "\x00\x00"     // la valeur, complétée à 4 octets
+        . "\x00\x00\x00\x00";                      // pas d'IFD suivant
+
+    $payload = "Exif\x00\x00" . $tiff;
+    $segment = "\xFF\xE1" . pack('n', strlen($payload) + 2) . $payload;
+
+    // Le segment APP1 se place juste après le marqueur de début d'image.
+    return "\xFF\xD8" . $segment . substr($jpeg, 2);
+}

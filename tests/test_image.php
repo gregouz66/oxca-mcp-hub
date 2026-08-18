@@ -124,13 +124,69 @@ test('la transparence reste blanche même quand l\'image est redimensionnée', f
     }
 });
 
-test('les orientations EXIF en miroir tournent dans le bon sens', function () {
-    // 6 et 8 sont les cas courants d'une photo prise à la verticale ; 5 et 7
-    // sont leurs variantes en miroir et tournent à l'opposé. Les intervertir
-    // sortait l'image à 180° de la bonne.
-    $source = file_get_contents(__DIR__ . '/../app/image.php');
-    assert_contains('6, 7    => -90', $source);
-    assert_contains('5, 8    => 90', $source);
+test('une photo prise à la verticale est redressée', function () {
+    // Orientations 6 et 8 : le cas courant. L'image est stockée en paysage
+    // avec une consigne de rotation ; après redressement elle doit être en
+    // portrait. Sans EXIF (orientation 1), elle doit rester telle quelle.
+    $paysage = fixture_jpeg(800, 400);
+    foreach ([1 => [800, 400], 3 => [800, 400], 6 => [400, 800], 8 => [400, 800]] as $orientation => [$w, $h]) {
+        $avec  = fixture_jpeg_with_orientation($paysage, $orientation);
+        $notes = [];
+        $im    = image_apply_exif_orientation(imagecreatefromstring($avec), $avec, $notes);
+        assert_eq($w, imagesx($im), "orientation $orientation : largeur");
+        assert_eq($h, imagesy($im), "orientation $orientation : hauteur");
+        imagedestroy($im);
+    }
+});
+
+test('les orientations en miroir tournent à l\'opposé de leurs jumelles', function () {
+    // 5 et 7 sont les variantes en miroir de 8 et 6 : elles tournent dans
+    // l'autre sens. Les intervertir sortait l'image à 180° de la bonne.
+    // On repère un coin par sa couleur et on suit où il atterrit.
+    $im = imagecreatetruecolor(400, 200);
+    imagefilledrectangle($im, 0, 0, 400, 200, imagecolorallocate($im, 255, 255, 255));
+    imagefilledrectangle($im, 0, 0, 40, 40, imagecolorallocate($im, 255, 0, 0)); // coin haut-gauche rouge
+    ob_start();
+    imagejpeg($im, null, 95);
+    imagedestroy($im);
+    $base = (string) ob_get_clean();
+
+    $coinRouge = function ($im): string {
+        $w = imagesx($im);
+        $h = imagesy($im);
+        $coins = [
+            'haut-gauche'  => [10, 10],
+            'haut-droit'   => [$w - 10, 10],
+            'bas-gauche'   => [10, $h - 10],
+            'bas-droit'    => [$w - 10, $h - 10],
+        ];
+        foreach ($coins as $nom => [$x, $y]) {
+            $c = imagecolorsforindex($im, imagecolorat($im, $x, $y));
+            if ($c['red'] > 180 && $c['green'] < 90 && $c['blue'] < 90) {
+                return $nom;
+            }
+        }
+        return 'introuvable';
+    };
+
+    $position = [];
+    foreach ([5, 6, 7, 8] as $orientation) {
+        $avec  = fixture_jpeg_with_orientation($base, $orientation);
+        $notes = [];
+        $im    = image_apply_exif_orientation(imagecreatefromstring($avec), $avec, $notes);
+        $position[$orientation] = $coinRouge($im);
+        imagedestroy($im);
+    }
+
+    // 5 et 8 partagent leur sens de rotation, 6 et 7 le leur : si 5 et 7
+    // étaient intervertis, ces égalités tomberaient.
+    assert_true($position[5] !== $position[6],
+        'les orientations 5 et 6 ne peuvent pas placer le repère au même endroit');
+    assert_true($position[7] !== $position[8],
+        'les orientations 7 et 8 ne peuvent pas placer le repère au même endroit');
+    foreach ($position as $orientation => $coin) {
+        assert_true($coin !== 'introuvable', "orientation $orientation : repère perdu");
+    }
 });
 
 test('une image aux dimensions démesurées est refusée avant décodage', function () use ($spec) {

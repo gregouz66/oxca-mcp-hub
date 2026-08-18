@@ -217,6 +217,11 @@ function http_download_limited(
     ];
     curl_close($ch);
 
+    if ($status >= 300 && $status < 400 && !$perHopGuard) {
+        throw new McpToolError("« $label » répond par une redirection (HTTP $status), que ce serveur ne suit pas :"
+            . ' le contrôle des adresses à chaque saut demande PHP 8.2 ou plus, et il est inopérant derrière un proxy sortant.'
+            . ' Indiquez l\'URL finale du fichier plutôt qu\'un lien de redirection.');
+    }
     if ($status !== 200) {
         throw new McpToolError("Le fichier n'a pas pu être téléchargé (HTTP $status) : $url");
     }

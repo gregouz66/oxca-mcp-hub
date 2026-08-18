@@ -553,7 +553,7 @@ function ig_tool_publish_image(array $settings, array $args): array
     $containerId = ig_container_create($settings, $params);
     // Le budget démarre ici : le compter depuis le début de l'outil ferait
     // annoncer « Instagram traite encore » avant même qu'il ait eu la main.
-    ig_container_await($settings, $containerId, time() + IG_POLL_BUDGET, [$containerId]);
+    ig_container_await($settings, $containerId, ig_poll_deadline(), [$containerId]);
     $result = ig_publish($settings, $containerId);
 
     ig_sweep_media();
@@ -616,7 +616,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
         // Chaque enfant doit être prêt : créer le parent trop tôt échoue.
         // Le budget ne démarre qu'ici, une fois les conversions et les envois
         // terminés : sinon il serait déjà épuisé avant la première attente.
-        $deadline = time() + IG_POLL_BUDGET;
+        $deadline = ig_poll_deadline();
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
@@ -625,7 +625,7 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     // Sur une reprise, les enfants viennent de l'appelant : rien ne garantit
     // qu'Instagram a fini de les traiter, et créer le parent trop tôt échoue.
     if (($args['children'] ?? []) !== []) {
-        $deadline = time() + IG_POLL_BUDGET;
+        $deadline = ig_poll_deadline();
         foreach ($children as $childId) {
             ig_container_await($settings, $childId, $deadline, $children, true);
         }
@@ -643,13 +643,32 @@ function ig_tool_publish_carousel(array $settings, array $args): array
     ig_apply_common_params($params, $args);
 
     $parentId = ig_container_create($settings, $params);
-    ig_container_await($settings, $parentId, time() + IG_POLL_BUDGET, [$parentId]);
+    // Le parent puise dans la même enveloppe que les enfants : deux budgets
+    // enchaînés dépasseraient le temps d'exécution alloué au script.
+    ig_container_await($settings, $parentId, $deadline ?? ig_poll_deadline(), [$parentId]);
     $result = ig_publish($settings, $parentId);
 
     ig_sweep_media();
 
     return ig_publish_result($settings, $result, $notes,
         'Carrousel de ' . count($children) . ' images publié sur Instagram');
+}
+
+/**
+ * Échéance des attentes d'un appel, en secondes depuis l'époque.
+ *
+ * Bornée par le temps d'exécution que l'hébergement laisse au script : être
+ * tué par PHP en pleine attente priverait l'appelant de la réponse qui lui
+ * dirait comment reprendre. On garde une marge pour l'envoi de la réponse.
+ */
+function ig_poll_deadline(): int
+{
+    $max = (int) ini_get('max_execution_time');
+    if ($max <= 0) {
+        return time() + IG_POLL_BUDGET; // pas de limite (CLI, ou réglage désactivé)
+    }
+    $reste = $max - (int) (microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true)));
+    return time() + max(3, min(IG_POLL_BUDGET, $reste - 5));
 }
 
 function ig_tool_publish_container(array $settings, array $args): array
@@ -660,7 +679,7 @@ function ig_tool_publish_container(array $settings, array $args): array
     if ($creationId === '') {
         throw new McpToolError('Argument « creation_id » manquant : indiquez le conteneur à publier.');
     }
-    ig_container_await($settings, $creationId, time() + IG_POLL_BUDGET, [$creationId]);
+    ig_container_await($settings, $creationId, ig_poll_deadline(), [$creationId]);
     $result = ig_publish($settings, $creationId);
 
     return ig_publish_result($settings, $result, [], 'Publication terminée');

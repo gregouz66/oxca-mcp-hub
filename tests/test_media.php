@@ -66,18 +66,35 @@ test('storage/media n\'est pas servi directement par le serveur web', function (
         'les dépôts doivent rester sous storage/');
 });
 
-test('une écriture incomplète ne laisse ni fichier tronqué ni orphelin', function () {
-    // Un disque plein n'échoue pas : file_put_contents écrit moins d'octets
-    // que demandé. Publier un tel fichier donnerait une erreur incompréhensible
-    // côté Instagram, et il resterait sur le disque sans métadonnées — donc
-    // invisible au ramasse-miettes.
-    $source = file_get_contents(dirname(__DIR__) . '/app/media.php');
-    assert_contains('$written !== strlen($bytes)', $source, 'le nombre d\'octets écrits doit être vérifié');
-    assert_contains('@unlink(media_path($key, \'bin\'))', $source, 'le fichier partiel doit être supprimé');
-
+test('un dépôt écrit exactement les octets fournis, ou rien', function () {
+    // Sur un disque plein, file_put_contents rend false mais laisse un fichier
+    // partiel derrière lui (vérifié sur un système de fichiers de 64 Ko).
+    // Publier ce fichier tronqué donnerait une erreur incompréhensible côté
+    // Instagram, et il resterait sur le disque sans métadonnées — donc
+    // invisible au ramasse-miettes. media_put() doit donc échouer *et* nettoyer.
     $avant = count(glob(media_dir() . '/*') ?: []);
-    $put   = media_put('contenu complet', 'image/jpeg');
-    assert_eq('contenu complet', file_get_contents(media_path($put['key'], 'bin')));
+
+    $contenu = random_bytes(50000);
+    $put     = media_put($contenu, 'image/jpeg');
+    assert_eq($contenu, file_get_contents(media_path($put['key'], 'bin')),
+        'les octets déposés doivent être exactement ceux fournis');
+    assert_eq(strlen($contenu), media_meta($put['key'])['size']);
+
     media_forget($put['key']);
-    assert_eq($avant, count(glob(media_dir() . '/*') ?: []), 'aucun fichier ne doit rester');
+    assert_eq($avant, count(glob(media_dir() . '/*') ?: []),
+        'aucun fichier ne doit subsister après un dépôt puis son oubli');
+});
+
+test('un dépôt sans métadonnées lisibles finit par être purgé', function () {
+    // C'est l'état que laisserait une écriture interrompue entre les deux
+    // fichiers : des octets sans métadonnées. Le ramasse-miettes se replie
+    // alors sur la date du fichier.
+    $put = media_put('orphelin', 'image/jpeg');
+    file_put_contents(media_path($put['key'], 'json'), 'métadonnées illisibles');
+    touch(media_path($put['key'], 'json'), time() - MEDIA_TTL - 60);
+
+    assert_eq(null, media_meta($put['key']), 'des métadonnées illisibles ne doivent rien servir');
+    media_gc();
+    assert_false(is_file(media_path($put['key'], 'bin')), 'les octets orphelins doivent être purgés');
+    assert_false(is_file(media_path($put['key'], 'json')));
 });
