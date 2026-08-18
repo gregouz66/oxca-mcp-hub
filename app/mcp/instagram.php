@@ -47,8 +47,18 @@ const IG_CAPTION_MAX_MENTIONS = 20;
 const IG_ALT_TEXT_MAX       = 1000;
 const IG_COLLABORATORS_MAX  = 3;
 
-/** Plafond du contenu base64 accepté, avant même décodage (~30 Mo réels). */
-const IG_BASE64_MAX_CHARS = 40000000;
+/**
+ * Plafonds du contenu base64 accepté, avant tout décodage.
+ *
+ * Ce ne sont pas les limites d'Instagram (une image source peut légitimement
+ * peser plus que les 8 Mo finaux, on la réduit) mais celles de l'hébergement :
+ * décoder puis décompresser une image en mémoire coûte plusieurs fois sa
+ * taille, et un mutualisé plafonne souvent à 128 Mo. Dépasser sans le dire
+ * produirait une erreur fatale de PHP — donc une réponse MCP tronquée,
+ * illisible pour le client. Mieux vaut refuser tôt et expliquer.
+ */
+const IG_BASE64_MAX_CHARS       = 24000000;  // ~18 Mo par image
+const IG_BASE64_MAX_TOTAL_CHARS = 64000000;  // ~48 Mo pour un carrousel entier
 
 /** Quota de publication retenu par défaut, à défaut de lecture au runtime. */
 const IG_QUOTA_FALLBACK = 50;
@@ -559,20 +569,29 @@ function ig_tool_publish_carousel(array $settings, array $args): array
                 . ' été fournie' . (count($items) > 1 ? 's' : '') . '.');
         }
 
+        ig_check_total_payload($items);
+
         foreach ($items as $i => $item) {
             if (!is_array($item)) {
                 throw new McpToolError('L\'élément ' . ($i + 1) . ' du carrousel n\'est pas un objet.');
             }
-            $label = 'image ' . ($i + 1);
-            $media = ig_resolve_image($settings, $item, $label, $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
+            $label   = 'image ' . ($i + 1);
+            $altText = trim((string) ($item['alt_text'] ?? ''));
+            $media   = ig_resolve_image($settings, $item, $label, $args['fit'] ?? 'reject', $args['stage'] ?? 'auto');
+
+            // L'image est désormais sur le disque : rien ne justifie de garder
+            // son encodage en mémoire pendant qu'on traite les suivantes.
+            // Seule la charge utile est libérée, le reste de l'élément a déjà
+            // été lu ci-dessus.
+            unset($item['image_base64'], $items[$i]);
+
             foreach ($media['notes'] as $note) {
                 $notes[] = ucfirst($label) . ' : ' . $note;
             }
 
             // La légende et le lieu ne sont pas acceptés sur les enfants — et
-            // une légende envoyée ici serait ignorée en silence.
+            // une légende envoyée ici serait ignorée en silence par Instagram.
             $params = ['image_url' => $media['url'], 'is_carousel_item' => 'true'];
-            $altText = trim((string) ($item['alt_text'] ?? ''));
             if ($altText !== '') {
                 $params['alt_text'] = ig_check_alt_text($altText);
             }
@@ -889,8 +908,9 @@ function ig_resolve_image(array $settings, array $args, string $label, string $f
         // Refus avant décodage : inutile de matérialiser en mémoire un contenu
         // qu'on rejettera de toute façon (base64 pèse ~4/3 des octets réels).
         if (strlen($base64) > IG_BASE64_MAX_CHARS) {
-            throw new McpToolError("« image_base64 » est trop volumineux pour « $label » : "
-                . round(strlen($base64) * 3 / 4 / 1048576) . ' Mo environ, pour une image finale limitée à 8 Mo.');
+            throw new McpToolError("« image_base64 » est trop volumineux pour « $label » : environ "
+                . round(strlen($base64) * 3 / 4 / 1048576) . ' Mo, alors que cet hébergement ne peut en traiter que '
+                . round(IG_BASE64_MAX_CHARS * 3 / 4 / 1048576) . ' Mo par image. Réduisez l\'image avant de l\'envoyer, ou publiez-la par « image_url ».');
         }
         $bytes = base64_decode(preg_replace('/\s+/', '', $base64) ?? $base64, true);
         if ($bytes === false || $bytes === '') {
@@ -968,6 +988,27 @@ function ig_require_connection(array $settings): void
     }
     if (!empty($settings['token_expires_at']) && $settings['token_expires_at'] < now()) {
         throw new McpToolError('Le token Instagram a expiré (validité 60 jours, renouvelée automatiquement tant que le connecteur sert). Le propriétaire doit se reconnecter depuis la page du connecteur.');
+    }
+}
+
+/**
+ * Refuse un carrousel dont les images cumulées dépassent ce que l'hébergement
+ * peut traiter. Sans ce contrôle, PHP s'arrête sur une erreur fatale au milieu
+ * du traitement : le client MCP ne reçoit alors aucune réponse exploitable.
+ */
+function ig_check_total_payload(array $items): void
+{
+    $total = 0;
+    foreach ($items as $item) {
+        if (is_array($item)) {
+            $total += strlen((string) ($item['image_base64'] ?? ''));
+        }
+    }
+    if ($total > IG_BASE64_MAX_TOTAL_CHARS) {
+        throw new McpToolError('Les ' . count($items) . ' images du carrousel totalisent environ '
+            . round($total * 3 / 4 / 1048576) . ' Mo, au-delà des '
+            . round(IG_BASE64_MAX_TOTAL_CHARS * 3 / 4 / 1048576)
+            . ' Mo que cet hébergement peut traiter en une fois. Réduisez les images avant de les envoyer, ou publiez-les par « image_url » : Instagram les téléchargera alors directement, sans passer par la mémoire du serveur.');
     }
 }
 

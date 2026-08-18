@@ -557,3 +557,59 @@ test('les secrets sont chiffrés en base', function () {
     // …mais restent lisibles par l'application.
     assert_eq('IGSECRET', config_settings(config_get((int) $config['id']))['app_secret']);
 });
+
+group('Instagram — garde-fous de l\'hébergement mutualisé');
+
+test('une image base64 démesurée est refusée avant d\'être décodée', function () {
+    $enorme = str_repeat('A', IG_BASE64_MAX_CHARS + 4);
+    $e = assert_throws(
+        fn () => ig_resolve_image(fixture_ig_settings(), ['image_base64' => $enorme], 'image', 'reject', 'auto'),
+        'trop volumineux',
+        McpToolError::class
+    );
+    // Le message doit dire quoi faire, pas seulement constater.
+    assert_contains('image_url', $e->getMessage());
+});
+
+test('un carrousel dont les images cumulées épuiseraient la mémoire est refusé', function () {
+    // Chaque image passe seule, mais leur cumul dépasse ce que PHP peut traiter :
+    // sans ce contrôle, l'erreur serait fatale au milieu du traitement et le
+    // client MCP ne recevrait aucune réponse exploitable.
+    $part  = str_repeat('A', 20000000);
+    $items = array_fill(0, 5, ['image_base64' => $part]);
+
+    $e = assert_throws(fn () => ig_check_total_payload($items), 'totalisent environ', McpToolError::class);
+    assert_contains('image_url', $e->getMessage());
+
+    // Trois images de la même taille restent sous le plafond.
+    ig_check_total_payload(array_fill(0, 3, ['image_base64' => $part]));
+});
+
+test('un carrousel de dix photos ordinaires reste dans le budget mémoire', function () {
+    $photo = fixture_jpeg(1600, 1200, 82);
+    $items = array_fill(0, 10, ['image_base64' => base64_encode($photo)]);
+    ig_check_total_payload($items); // ne doit pas lever
+
+    $avant = memory_get_usage(true);
+    $created = 0;
+    http_fake_fn(function ($m, $u, $h, $b) use (&$created) {
+        $p = http_fake_params($u, $b);
+        if ($m === 'POST' && str_contains($u, '/media_publish')) {
+            return [200, [], ['id' => 'M']];
+        }
+        if ($m === 'POST' && str_contains($u, '/media')) {
+            $created++;
+            return [200, [], ['id' => isset($p['children']) ? 'P' : 'C' . $created]];
+        }
+        return [200, [], ['status_code' => 'FINISHED', 'permalink' => '']];
+    });
+    $result = ig_tool_publish_carousel(fixture_ig_settings(), ['items' => $items, 'caption' => 'Dix photos']);
+
+    assert_eq('M', $result['structuredContent']['media_id']);
+    assert_eq(11, $created, '10 enfants + 1 parent');
+    // Le traitement se fait image par image : la mémoire ne doit pas enfler
+    // proportionnellement au nombre d'images.
+    $consomme = (memory_get_usage(true) - $avant) / 1048576;
+    assert_true($consomme < 64, 'mémoire consommée : ' . round($consomme, 1) . ' Mo');
+    http_real();
+});

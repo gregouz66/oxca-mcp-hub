@@ -364,6 +364,16 @@ Les images sont fournies soit par `image_url` (URL publique directe), soit par
 `image_base64`. Avec une URL, le connecteur ne ré-héberge l'image que si elle
 n'est pas conforme (`stage: "auto"`, par défaut).
 
+> **Poids des envois en base64.** Décoder puis décompresser une image coûte
+> plusieurs fois sa taille en mémoire, et un mutualisé plafonne souvent à
+> 128 Mo. Le connecteur refuse donc, avec un message explicite, au-delà de
+> ~18 Mo par image et ~48 Mo pour un carrousel entier — plutôt que de laisser
+> PHP s'arrêter en cours de route et renvoyer une réponse tronquée. Un
+> carrousel de dix photos ordinaires consomme environ 18 Mo : la limite ne se
+> rencontre qu'avec des images non redimensionnées. Au-delà, passez par
+> `image_url` : Instagram télécharge alors directement, sans passer par la
+> mémoire du serveur.
+
 ### Publier un carrousel
 
 ```
